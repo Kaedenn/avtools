@@ -5,9 +5,10 @@ Montage a video file into a collage of equally-spaced frames.
 """
 
 # TODO/FIXME:
-# 1) Add overwrite pre-check and configuration so ffmpeg/avconv doesn't prompt
+# *) Allow user to configure paths to ffmpeg, ffprobe
+# *) Add overwrite pre-check and configuration so ffmpeg/avconv doesn't prompt
 # for user input and error when user selects N.
-# 2) Adjust -o,--out help text to indicate PATH could be a directory.
+# *) Adjust -o,--out help text to indicate PATH could be a directory.
 
 import argparse
 import json
@@ -35,6 +36,7 @@ COLOR_ADAPTER_DEFAULT_COLORS = {
 logger = None
 
 class ColorFormatter(logging.Formatter):
+  "Logging formatter to print records in color"
   def __init__(self, *args, **kwargs):
     self.__color_table = kwargs.get("colors", COLOR_ADAPTER_DEFAULT_COLORS)
     super(ColorFormatter, self).__init__(*args, **kwargs)
@@ -70,6 +72,9 @@ def is_number(n):
     return False
 
 def format_bytes(size):
+  """
+  Format a number of bytes as a string.
+  """
   names = ("B", "KB", "MB", "GB", "TB")
   mag = 0
   while size > 1024:
@@ -94,6 +99,9 @@ def avprobe(path, *fields, **kwargs):
   return vformat, vstream
 
 def extract_video_info(fdata, sdata):
+  """
+  Merge format and stream data into a single object.
+  """
   data = {
     "frames": None,
     "width": sdata["width"],
