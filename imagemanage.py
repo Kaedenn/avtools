@@ -8,8 +8,12 @@ rename anything.
 """
 
 # FIXME/TODO:
-# Support SVG, XPM
-# Support animated GIF files
+# Support the following image types:
+#   SVG; https://bgstack15.wordpress.com/2019/07/13/display-svg-in-tkinter-python3/
+#   XPM
+#   GIF (animated)
+#     Requires either multithreading or hooking into the tkinter main loop
+#     Note that tkinter is *not* thread-safe!
 # Calculate (instead of hard-coding) heights and adjusts (see TODOs below)
 #   Calculate the size of the grid cell?
 #   Calculate the sizes of the other grid cells?
@@ -375,16 +379,45 @@ class ImageManager(object):
       self._input.focus()
       self._input.select_range(0, len(text))
 
+  def _do_find_image(self, prefix):
+    "Return the path to the next image starting with prefix (or None)"
+    for image_path in iterate_from(self._images, self._index):
+      base, name = os.path.split(image_path)
+      if name.startswith(prefix):
+        return image_path
+
+  def _handle_command(self, command):
+    "Handle a command entered via the input box"
+    cmd_and_args = command.split(None, 1)
+    cmd, args = command, ""
+    if len(cmd_and_args) == 2:
+      cmd, args = cmd_and_args
+    logger.info("Handling command {!r} (args {!r})".format(cmd, args))
+    if cmd in ("i", "inspect"):
+      # Inspect various things
+      cw, ch = self.canvas_size()
+      logger.info("Root WxH: {}x{}".format(self._width, self._height))
+      logger.info("Canvas WxH: {}x{}".format(cw, ch))
+      logger.info("Input width={}".format(self._input_width))
+      if self._image is not None:
+        logger.info("Image size: {}".format(self._image.size))
+      else:
+        logger.info("No image displayed")
+    else:
+      self._input_set_text("Invalid command {!r}".format(command), select=False)
+
+  # Tkinter callback and manual call
   @blocked_by_input
-  def _prev_image(self, *args):
+  def _prev_image(self, event=None):
     "Navigate to the previous image"
     index = self._index - 1
     if index < 0:
       index = len(self._images) - 1
     self.set_index(index)
 
+  # Tkinter callback and manual call
   @blocked_by_input
-  def _next_image(self, *args):
+  def _next_image(self, event=None):
     "Navigate to the next image"
     index = self._index + 1
     if index >= len(self._images):
@@ -392,6 +425,7 @@ class ImageManager(object):
       index = 0
     self.set_index(index)
 
+  # Tkinter callback
   @blocked_by_input
   def _rename_image(self, *args):
     "Rename the current image"
@@ -399,24 +433,28 @@ class ImageManager(object):
     self._input_mode = MODE_RENAME
     self._input_set_text(name, select=True)
 
+  # Tkinter callback
   @blocked_by_input
   def _delete_image(self, *args):
     "Delete the current image"
     self._action(("DELETE",))
     self._next_image()
 
+  # Tkinter callback
   @blocked_by_input
   def _go_to_image(self, *args):
     "Navigate to the image with the given number"
     self._input_mode = MODE_SET_IMAGE
     self._input_set_text(self._last_input, select=True)
 
+  # Tkinter callback
   @blocked_by_input
   def _find_image(self, *args):
     "Show the first image filename starting with a given prefix"
     self._input_mode = MODE_GOTO
     self._input_set_text(self._last_input, select=True)
 
+  # Tkinter callback
   @blocked_by_input
   def _mark_image(self, event):
     "Mark an image for later examination"
@@ -424,17 +462,20 @@ class ImageManager(object):
       self._functions[event.char](self._path())
     self._action(("MARK-{}".format(event.char),))
 
+  # Tkinter callback
   @blocked_by_input
   def _enter_command(self, event):
     "Let the user enter an arbitrary command"
     self._input_mode = MODE_COMMAND
     self._input_set_text("Command?", select=True)
 
+  # Tkinter callback
   @blocked_by_input
   def _show_help(self, *args):
     "STUB: Display help text to the user"
     logger.debug("_show_help: {}".format(args))
 
+  # Tkinter callback
   @blocked_by_input
   def _adjust(self, event):
     "Fine-tune image size (for testing)"
@@ -445,6 +486,7 @@ class ImageManager(object):
     print("Height: {}".format(self._height))
     self.set_index(self._index)
 
+  # Tkinter callback
   @blocked_by_input
   def _toggle_zoom(self, event):
     "Advance the zoom method and redraw the image"
@@ -458,6 +500,7 @@ class ImageManager(object):
     self._input_set_text(notif, select=False)
     self.redraw_image() # Redraw the current image
 
+  # Tkinter callback
   def _update_window(self, event):
     "Called when the root window receives a Configure event"
     logger.debug("_update_window on {!r}: {}".format(event.widget, event))
@@ -467,13 +510,7 @@ class ImageManager(object):
       self._height = event.height# - SCREEN_HEIGHT_ADJUST
       self.redraw_image() # Redraw the current image
 
-  def _do_find_image(self, prefix):
-    "Return the path to the next image starting with prefix (or None)"
-    for image_path in iterate_from(self._images, self._index):
-      base, name = os.path.split(image_path)
-      if name.startswith(prefix):
-        return image_path
-
+  # Tkinter callback
   def _input_enter(self, *args):
     "Called when user presses Enter/Return on the Entry"
     logger.debug("_input_enter: {}".format(args))
@@ -512,36 +549,18 @@ class ImageManager(object):
       logger.error("Internal error: invalid mode {}".format(self._input_mode))
     self._input_mode = MODE_NONE
 
-  def _handle_command(self, command):
-    "Handle a command entered via the input box"
-    cmd_and_args = command.split(None, 1)
-    cmd, args = command, ""
-    if len(cmd_and_args) == 2:
-      cmd, args = cmd_and_args
-    logger.info("Handling command {!r} (args {!r})".format(cmd, args))
-    if cmd in ("i", "inspect"):
-      # Inspect various things
-      cw, ch = self.canvas_size()
-      logger.info("Root WxH: {}x{}".format(self._width, self._height))
-      logger.info("Canvas WxH: {}x{}".format(cw, ch))
-      logger.info("Input width={}".format(self._input_width))
-      if self._image is not None:
-        logger.info("Image size: {}".format(self._image.size))
-      else:
-        logger.info("No image displayed")
-    else:
-      self._input_set_text("Invalid command {!r}".format(command), select=False)
-
-  def escape(self, *args):
+  # Tkinter callback
+  def escape(self, event=None):
     "Either cancel rename or exit the application"
     if self._root.focus_get() == self._input:
       self._input_mode = MODE_NONE
       self._input.delete(0, len(self._input.get()))
       self._gutter.focus()
     else:
-      self.close(*args)
+      self.close(event)
 
-  def close(self, *args):
+  # Tkinter callback
+  def close(self, event=None):
     "Exit the application"
     self.root().quit()
 
