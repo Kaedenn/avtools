@@ -82,20 +82,21 @@ def format_bytes(size):
     size = size / 1024.0
   return "{} {}".format(round(size, 2), names[mag])
 
-def avprobe(path, *fields, **kwargs):
-  """
-  Probe <path> and return the requested fields.
-
-  Extra arguments accepted:
-    ffargs: list: arguments to append to avprobe's command line
-    verbose: bool
-  """
+def avprobe(path, **kwargs):
+  "Probe <path> and return pair of <file-info>, <stream-info> dicts"
   cmd = ["ffprobe", "-show_format", "-show_streams", "-of", "json", "-v", "error"]
   cmd.append(path)
   logger.debug("Running {}".format(subprocess.list2cmdline(cmd)))
   vdata = json.loads(subprocess.check_output(cmd))
   vformat = vdata["format"]
-  vstream = [s for s in vdata["streams"] if s["codec_type"] == "video"][-1]
+  vstream = None
+  for s in vdata["streams"]:
+    if s.get("codec_type") == "video":
+      if s.get("nb_frames", "X").isdigit():
+        vstream = s
+        # No break so we get the last one
+  if vstream is None:
+    raise VideoError("Failed to probe {!r}; no video stream found".format(path))
   return vformat, vstream
 
 def extract_video_info(fdata, sdata):
@@ -163,7 +164,7 @@ def montage(inpath, outpath, nr, nc, **kwargs):
   scale = kwargs.get("scale", None)
 
   # Examine the video and calculate various necessary things
-  fdata, sdata = avprobe(inpath)
+  fdata, sdata = avprobe(inpath) # TODO: add kwargs
   data = extract_video_info(fdata, sdata)
   w, h = int(data["width"]), int(data["height"])
   nf = int(data["frames"])
@@ -194,6 +195,7 @@ def montage(inpath, outpath, nr, nc, **kwargs):
     fh = h * scale
 
   # Build the ffmpeg command line
+  logger.info("filesize: {}".format(format_bytes(os.stat(inpath).st_size)))
   logger.info("isize: {}x{}, osize={}x{}".format(w, h, fw, fh))
   logger.info("frames: {} ({} to {})".format(nf, sts, ets))
   func = "not(mod(n\\,{}))".format(nf // (nr * nc))
