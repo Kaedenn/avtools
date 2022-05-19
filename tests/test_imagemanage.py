@@ -5,11 +5,45 @@ Test imagemanage.py
 """
 
 import os
+import shutil
 import sys
 import unittest
 
-sys.path.append(os.path.join(os.path.dirname(sys.argv[0]), os.path.pardir))
+TEST_PATH = os.path.dirname(sys.argv[0])
+
+sys.path.append(os.path.join(TEST_PATH, os.path.pardir))
 import imagemanage
+
+# External paths, configurable via environment variables
+PATH_ICONS = os.environ.get("ICONS_PATH", "/usr/share/icons")
+ICON_THEME = os.environ.get("ICONS_THEME", "Yaru")
+ICON_SIZE = os.environ.get("ICONS_SIZE", "256x256")
+
+def debug(msg):
+  if os.environ.get("DEBUG"):
+    sys.stderr.write("DEBUG: " + msg + "\n")
+
+class TestYaru(unittest.TestCase):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self._yaru_path = os.path.join(PATH_ICONS, ICON_THEME, ICON_SIZE)
+    self._path = os.path.join(TEST_PATH, "test-Yaru")
+    print(f"Source: {self._yaru_path}")
+    print(f"Dest: {self._path}")
+    debug(self.id())
+    debug("\n".join(f"{k}={getattr(self, k)!r}" for k in dir(self)))
+
+  def setUp(self):
+    if not os.path.exists(self._yaru_path):
+      raise unittest.SkipTest(f"{self._yaru_path} does not exist")
+    shutil.copytree(self._yaru_path, self._path)
+    print(f"Copied {self._yaru_path} to {self._path}")
+
+  def tearDown(self):
+    shutil.rmtree(self._path)
+
+  def test_first(self):
+    print(self)
 
 class TestUtilityFunctions(unittest.TestCase):
   def test_format_size(self):
