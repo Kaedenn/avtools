@@ -41,7 +41,6 @@ FORMAT_JSON_PRETTY = _add_format_kind("json-pretty")
 FORMAT_PYTHON = _add_format_kind("python")
 FORMAT_KV = _add_format_kind("kv")
 FORMAT_SUMMARY = _add_format_kind("summary")
-FORMAT_KINDS = tuple(FORMAT_KINDS)
 del _add_format_kind
 
 STREAM_AUDIO = "a"
@@ -278,13 +277,13 @@ def _main_once(path, args):
   elif args.format == FORMAT_KV:
     for k, v in file_info["format"].items():
       print("format.{} = {}".format(k, json.dumps(v)))
-    for idx, stream in enumerate(file_info["audio_streams"]):
+    for idx, stream in enumerate(file_info.get("audio_streams", ())):
       for k, v in stream.items():
         print("audio.{}.{} = {}".format(idx, k, json.dumps(v)))
-    for idx, stream in enumerate(file_info["video_streams"]):
+    for idx, stream in enumerate(file_info.get("video_streams", ())):
       for k, v in stream.items():
         print("video.{}.{} = {}".format(idx, k, json.dumps(v)))
-    for idx, stream in enumerate(file_info["other_streams"]):
+    for idx, stream in enumerate(file_info.get("other_streams", ())):
       for k, v in stream.items():
         print("other.{}.{} = {}".format(idx, k, json.dumps(v)))
   elif args.format == FORMAT_SUMMARY:
@@ -373,16 +372,16 @@ path separately. No special formatting is done for multiple paths.
       help="do not attempt to 'fix' probed data")
 
   ag = ap.add_argument_group("output format")
-  ag = ag.add_mutually_exclusive_group()
-  ag.add_argument("-f", "--format", choices=FORMAT_KINDS, default=FORMAT_JSON,
+  mg = ag.add_mutually_exclusive_group()
+  mg.add_argument("-f", "--format", choices=FORMAT_KINDS, default=FORMAT_JSON,
       help="output format (default: %(default)s)")
-  ag.add_argument("-J", "--json", dest="format", const=FORMAT_JSON_PRETTY,
+  mg.add_argument("-J", "--json", dest="format", const=FORMAT_JSON_PRETTY,
       action="store_const", help="alias for -f %(const)s")
-  ag.add_argument("-P", "--py", dest="format", const=FORMAT_PYTHON,
+  mg.add_argument("-P", "--py", dest="format", const=FORMAT_PYTHON,
       action="store_const", help="alias for -f %(const)s")
-  ag.add_argument("-K", "--kv", dest="format", const=FORMAT_KV,
+  mg.add_argument("-K", "--kv", dest="format", const=FORMAT_KV,
       action="store_const", help="alias for -f %(const)s")
-  ag.add_argument("-S", "--sum", dest="format", const=FORMAT_SUMMARY,
+  mg.add_argument("-S", "--sum", dest="format", const=FORMAT_SUMMARY,
       action="store_const", help="alias for -f %(const)s")
 
   ag = ap.add_argument_group("diagnostics")
