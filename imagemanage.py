@@ -174,6 +174,7 @@ class ImageManager:
     icon: path to an icon to use for the system tray
   """
   def __init__(self, images, **kwargs):
+    self._output = []
     self._root = root = tk.Tk()
     root.title("Image Manager") # Default; overwritten quite soon
     if kwargs.get("icon"):
@@ -253,6 +254,10 @@ class ImageManager:
 
     self._actions = collections.defaultdict(list)
     self._functions = {}
+
+  def add_output_file(self, path):
+    "Write mark actions to the given path"
+    self._output.append(path)
 
   def one_em(self):
     "Return the width of one 'M' character in the current font"
@@ -403,6 +408,9 @@ class ImageManager:
       raise ValueError(f"invalid arguments to _action; got {args!r}")
     logger.info("{}: {}".format(path, " ".join(action)))
     self._actions[path].append(action)
+    for fpath in self._output:
+      with open(fpath, "at") as fobj:
+        fobj.write("{!r} {!r}\n".format(path, " ".join(action)))
 
   def _input_set_text(self, text, select=True):
     "Set the input box's text, optionally selecting the content"
@@ -704,7 +712,7 @@ def main():
   ap.add_argument("--add-text-from", metavar="PROG",
       help="display text from program %(metavar)s (see below)")
   ap.add_argument("-o", "--out", metavar="PATH",
-      help="write actions to %(metavar)s (default: stdout)")
+      help="also write actions to %(metavar)s")
   ag = ap.add_argument_group("MARK-1 customisation")
   ag.add_argument("--write1", metavar="PATH",
       help="write MARK-1 entries to %(metavar)s")
@@ -732,8 +740,9 @@ def main():
     ap.print_help()
     sys.stderr.write("""
 Note that this program does not actually rename or delete anything. Instead,
-the operations are printed to -o,--out (default stdout) for the user to perform
-afterwards.
+the operations are written to stdout for the user to perform afterwards. Note
+that actions are written to -o,--out immediately and to stdout only after the
+program exits.
 """)
     sys.stderr.write("""
 Sorting actions beginning with "r" simulate passing --reverse. For example,
@@ -814,6 +823,12 @@ will copy the marked files to /home/user on the server example.com.
   if args.font_size is not None:
     skw["font_size"] = args.font_size
   s = ImageManager(images, **skw)
+
+  if args.out is not None:
+    if os.path.isfile(args.out) and os.stat(args.out).st_size > 0:
+      logger.warning("%r: file exists; deleting", args.out)
+      os.truncate(args.out, 0)
+    s.add_output_file(args.out)
 
   # Add MARK-1 function
   if args.write1:
