@@ -9,11 +9,14 @@ Montage a video file into a collage of equally-spaced frames.
 # *) Add overwrite pre-check and configuration so ffmpeg/avconv doesn't prompt
 # for user input and error when user selects N.
 # *) Adjust -o,--out help text to indicate PATH could be a directory.
+# *) Utilize mediainfo if nb_frames is not present
 
 import argparse
+import errno
 import json
 import logging
 import os
+import pprint
 import subprocess
 import sys
 
@@ -48,9 +51,7 @@ class ColorFormatter(logging.Formatter):
     return super(ColorFormatter, self).format(record)
 
 def format_timestamp(sec):
-  """
-  Convert seconds (int, float) to a timestamp HH:MM:SS string
-  """
+  "Convert seconds (int, float) to a timestamp HH:MM:SS string"
   frac = 0
   if sec != int(sec):
     frac = sec - int(sec)
@@ -62,9 +63,7 @@ def format_timestamp(sec):
   return ret
 
 def is_number(n):
-  """
-  Return True if the value can be parsed as a float.
-  """
+  "Return True if the value can be parsed as a float"
   try:
     float(n)
     return True
@@ -72,9 +71,7 @@ def is_number(n):
     return False
 
 def format_bytes(size):
-  """
-  Format a number of bytes as a string.
-  """
+  "Format a number of bytes as a string"
   names = ("B", "KB", "MB", "GB", "TB")
   mag = 0
   while size > 1024:
@@ -82,27 +79,82 @@ def format_bytes(size):
     size = size / 1024.0
   return "{} {}".format(round(size, 2), names[mag])
 
-def avprobe(path, **kwargs):
+def _parse_frame_rate(fr):
+  "Convert '<num>/<num>' frame-rate to a float"
+  if fr.count("/") == 1:
+    fn, fd = map(float, fr.split("/"))
+  else:
+    fn, fd = float(fr), 1
+  if fd != 0:
+    result = fn / fd
+    logger.debug("Frame-rate {!r} -> {} fps".format(fr, result))
+  else:
+    result = None
+    logger.debug("Frame-rate {!r} -> None; divide by zero".format(fr))
+  return result
+
+def _find_nb_frames(path):
+  "Try (using mediainfo) to deduce the number of frames the video has"
+  try:
+    cmd = ["mediainfo", "--Inform=Video;%FrameCount%", path]
+    fc_text = subprocess.check_output(cmd).decode().strip()
+    logger.debug("%s yielded %r", subprocess.list2cmdline(cmd), fc_text)
+    if is_number(fc_text):
+      return fc_text
+  except FileNotFoundError:
+    logger.info("mediainfo does not appear to be installed")
+  except subprocess.CalledProcessError as e:
+    logger.error("mediainfo failed:")
+    logger.exception(e)
+
+def _fixup_probe(path, vformat, vstreams):
+  "Attempt to fix common issues with ffprobe output"
+  if "size" not in vformat:
+    vformat["size"] = f"{os.stat(path).st_size}"
+  for snr, stream in enumerate(vstreams):
+    if stream.get("codec_type") == "video":
+      if "nb_frames" not in stream:
+        logger.debug("%s stream %d: get nb_frames via mediainfo...", path, snr)
+        fc = _find_nb_frames(path)
+        if fc is not None:
+          stream["nb_frames"] = fc
+      if "nb_frames" not in stream:
+        logger.debug("%s stream %d: get nb_frames...", path, snr)
+        duration = stream.get("duration", vformat.get("duration"))
+        if duration is not None and is_number(duration):
+          dsec = float(duration)
+          afr = stream.get("avg_frame_rate")
+          if afr is not None and afr != "0/0":
+            fr = _parse_frame_rate(afr)
+            if fr is not None:
+              stream["nb_frames"] = f"{int(dsec * fr)}"
+      # If the above failed, store -1
+      if "nb_frames" not in stream:
+        stream["nb_frames"] = "-1"
+  return vformat, vstreams
+
+def probe_video(path, **kwargs):
   "Probe <path> and return pair of <file-info>, <stream-info> dicts"
   cmd = ["ffprobe", "-show_format", "-show_streams", "-of", "json", "-v", "error"]
   cmd.append(path)
   logger.debug("Running {}".format(subprocess.list2cmdline(cmd)))
   vdata = json.loads(subprocess.check_output(cmd))
-  vformat = vdata["format"]
+  vformat, vstreams = _fixup_probe(path, vdata["format"], vdata["streams"])
   vstream = None
-  for s in vdata["streams"]:
+  logger.debug("vdata %s: %s", path, pprint.pformat(vdata))
+  for snr, s in enumerate(vstreams):
     if s.get("codec_type") == "video":
+      logger.debug("stream %d: %s", snr, pprint.pformat(s))
       if s.get("nb_frames", "X").isdigit():
         vstream = s
         # No break so we get the last one
   if vstream is None:
+    logger.debug("vdata: %r", vdata)
     raise VideoError("Failed to probe {!r}; no video stream found".format(path))
   return vformat, vstream
 
 def extract_video_info(fdata, sdata):
-  """
-  Merge format and stream data into a single object.
-  """
+  "Merge format and stream data into a single object"
   data = {
     "frames": None,
     "width": sdata["width"],
@@ -164,7 +216,7 @@ def montage(inpath, outpath, nr, nc, **kwargs):
   scale = kwargs.get("scale", None)
 
   # Examine the video and calculate various necessary things
-  fdata, sdata = avprobe(inpath) # TODO: add kwargs
+  fdata, sdata = probe_video(inpath) # TODO: add kwargs
   data = extract_video_info(fdata, sdata)
   w, h = int(data["width"]), int(data["height"])
   nf = int(data["frames"])
@@ -348,5 +400,9 @@ a filename to -o,--out.
 
 if __name__ == "__main__":
   main()
+else:
+  logging_format = "%(module)s:%(lineno)s:%(levelname)s: %(message)s"
+  logging.basicConfig(format=logging_format, level=logging.INFO)
+  logger = logging.getLogger(__name__)
 
 # vim: set ts=2 sts=2 sw=2:
