@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# pylint: disable=logging-format-interpolation
+
 """
 Display and manage a bunch of images.
 
@@ -11,6 +13,7 @@ rename anything.
 # Support the following image types:
 #   SVG; https://bgstack15.wordpress.com/2019/07/13/display-svg-in-tkinter-python3/
 #   XPM
+#     PIL.XpmImageFile breaks on images using more than 1 bit per pixel
 #   GIF (animated)
 #     Requires either multithreading or hooking into the tkinter main loop
 #     Note that tkinter is *not* thread-safe!
@@ -19,6 +22,7 @@ rename anything.
 #   Calculate the sizes of the other grid cells?
 #   Calculate the positions of the other grid cells and subtract?
 # Replace tk.Canvas with a CEF window (doesn't work with 3.8 as of 01/08/2020)
+# Zenity support where desirable
 
 import argparse
 import collections
@@ -33,15 +37,29 @@ import subprocess
 from subprocess import Popen, PIPE
 import sys
 import tkinter as tk
-from tkinter import font
-from tkinter import ttk
+import tkinter.font as tkfont
 from PIL import Image, ImageTk
 
 LOGGING_FORMAT = "%(filename)s:%(lineno)s:%(levelname)s: %(message)s"
 logging.basicConfig(format=LOGGING_FORMAT, level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SORT_MODES = ("none", "name", "time", "size", "rname", "rtime", "rsize")
+ASSET_PATH = "assets"
+FONT = "monospace"
+FONT_SIZE = 10
+
+SORT_NONE = "none" # unordered
+SORT_NAME = "name" # ascending
+SORT_TIME = "time" # oldest first
+SORT_SIZE = "size" # smallest first
+SORT_RNAME = "r" + SORT_NAME # descending
+SORT_RTIME = "r" + SORT_TIME # newest first
+SORT_RSIZE = "r" + SORT_SIZE # largest first
+SORT_MODES = (
+  SORT_NONE,
+  SORT_NAME, SORT_RNAME,
+  SORT_TIME, SORT_RTIME,
+  SORT_SIZE, SORT_RSIZE)
 
 SCALE_NONE = "none"
 SCALE_SHRINK = "shrink"
@@ -55,9 +73,9 @@ MODE_COMMAND = "command"
 
 INPUT_START_WIDTH = 20
 SCREEN_WIDTH_ADJUST = 0
-SCREEN_HEIGHT_ADJUST = 100 # TODO: Determine empirically
+SCREEN_HEIGHT_ADJUST = 100 # TODO: Somehow determine at runtime
 
-fromtimestamp = datetime.datetime.fromtimestamp
+PADDING = 2
 
 HELP_KEY_ACTIONS = """
 Key actions:
@@ -65,25 +83,24 @@ Key actions:
   <Right>     Go to the next image
   <Up>        Go to the 10th next image
   <Down>      Go to the 10th previous image
-  <Shift-r>   Mark the selected image for rename (<Escape> to cancel)
-  <Shift-d>   Mark the selected image for deletion
-  <Shift-f>   Go to the next image starting with the specified text
-  <Shift-g>   Go to a specific image, by number (starting at 1)
-  <h>         Display this message
-  <z>, <c>    Adjust canvas size slightly (debugging)
-  <Equal>     Enable or disable downscaling of images to fit the screen
-  <1>         Invoke --mark1 program (if --mark1 is specified)
-  <1>..<9>    Mark images for later examination
+  <Shift-r>   Mark the current image for rename (<Escape> to cancel)
+  <Shift-d>   Mark the current image for deletion
+  <Shift-f>   Search for the next image with filename starting with text
+  <Shift-g>   Go to the numbered image (starting at 1)
+  <Equal>     Toggle downscaling of images to fit the screen
+  <1>..<9>    Mark current image for later examination
   <Ctrl-w>    Exit the application
   <Ctrl-q>    Exit the application
   <Escape>    Cancel input or exit the application
-Marks will be displayed after this program terminates.
+  <t>         Toggle displaying standard image text
+  <z>, <c>    Adjust canvas size slightly (debugging)
+  <h>         Display this message
 """
 
-def Asset(name):
+def get_asset_path(name):
   "Get the file path to the named asset"
   self_path = os.path.dirname(os.path.realpath(sys.argv[0]))
-  return os.path.join(self_path, "assets", name)
+  return os.path.join(self_path, ASSET_PATH, name)
 
 def format_size(nbytes, places=2):
   "Format a number of bytes"
@@ -99,6 +116,10 @@ def format_size(nbytes, places=2):
     curr = round(curr, places)
   return f"{curr} {bases[base]}"
 
+def format_timestamp(tstamp, formatspec):
+  "Format a numeric timestamp"
+  return datetime.datetime.fromtimestamp(tstamp).strftime(formatspec)
+
 def iterate_from(item_list, start_index):
   "Iterate over an entire list, cyclically, starting at the given index + 1"
   curr = start_index + 1
@@ -111,53 +132,28 @@ def iterate_from(item_list, start_index):
     curr += 1
   yield item_list[start_index]
 
-def debug(*args):
-  "Display debug information about the given arguments"
-  # These types don't require introspection to display
-  LITERAL_TYPES = (tuple, list, dict, str, int, float)
-  def do_inspect(obj, pretty=False, indent=0):
-    desc = {k: getattr(obj, k) for k in dir(obj) if k[:2] != "__"}
-    if pretty and type(obj) not in LITERAL_TYPES:
-      sp = " "*indent
-      return "\n".join(f"{sp}{k} = {v!r}" for k,v in sorted(desc.items()))
-    else:
-      return repr(obj)
-  for arg in args:
-    name = "Event" if isinstance(arg, tk.Event) else type(arg).__name__
-    logger.debug("{}({})".format(name, do_inspect(arg, pretty=True, indent=2)))
-
-def debug_call(func, *args, **kwargs):
-  "Log and call func(*args, **kwargs)"
-  logger.debug("{}(*{}, **{})".format(func.__name__, args, kwargs))
-  return func(*args, **kwargs)
-
-def dump_functions(obj, func_prefix, omit=None):
-  "Call all functions starting with the prefix (dangerous: debugging only!)"
-  print(f"Inspection of {obj!r}")
-  for key in dir(obj):
-    if omit is not None and key in omit:
-      continue
-    if key.startswith(func_prefix):
-      val = getattr(obj, key)
-      if hasattr(val, "__call__"):
-        try:
-          print("  {}: {!r}".format(key, val()))
-        except Exception as e:
-          print(f"  {e}")
-      else:
-        print(f"  {key}: {val!r}")
+def is_image(filepath):
+  "True if the string looks like it refers to an image file"
+  mtype = mimetypes.guess_type(filepath)[0]
+  if mtype is not None:
+    mcat = mtype.split("/")[0]
+    if mcat == "image":
+      return True
+  return False
 
 def blocked_by_input(func):
   "Block a function from being called if self._input has focus"
   @functools.wraps(func)
   def wrapper(self, *args, **kwargs):
-    if self._root.focus_get() != self._input:
+    # pylint: disable=protected-access
+    if self.root.focus_get() != self._input:
       return func(self, *args, **kwargs)
-    else:
-      logger.debug("Input has focus; blocking event")
+    logger.debug("Input has focus; blocking event")
+    return None
   return wrapper
 
 class ImageManager:
+  # pylint: disable=too-many-instance-attributes
   """
   Display images and provide hotkeys to manage them. Does not actually rename
   or delete images.
@@ -196,6 +192,7 @@ class ImageManager:
     root.bind_all("<Key-h>", self._show_help)
     root.bind_all("<Key-z>", self._adjust)
     root.bind_all("<Key-c>", self._adjust)
+    root.bind_all("<Key-t>", self._toggle_text)
     root.bind_all("<Key-equal>", self._toggle_zoom)
     root.bind_all("<Key-slash>", self._enter_command)
     root.bind("<Configure>", self._update_window)
@@ -203,54 +200,59 @@ class ImageManager:
       root.bind_all(f"<Key-{i}>", self._mark_image)
 
     # Configuration before widget construction
-    sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    self._width = kwargs.get("width", sw-SCREEN_WIDTH_ADJUST)
-    self._height = kwargs.get("height", sh-SCREEN_HEIGHT_ADJUST)
+    width = root.winfo_screenwidth() - SCREEN_WIDTH_ADJUST
+    height = root.winfo_screenheight() - SCREEN_HEIGHT_ADJUST
+    self._width = kwargs.get("width", width)
+    self._height = kwargs.get("height", height)
     root.geometry(f"{self._width}x{self._height}")
 
     self._enable_text = kwargs.get("show_text", False)
-    self._input_width = kwargs.get("input_width", INPUT_START_WIDTH)
     self._text_functions = []
     self._scale_mode = SCALE_SHRINK
 
-    # Configure fonts
-    self._font_family = ff = kwargs.get("font_family", "monospace")
-    self._font_size = fs = kwargs.get("font_size", 10)
-    self._font = font.Font(family=ff, size=fs)
-    self._font_bold = font.Font(weight=font.BOLD, family=ff, size=fs)
+    self._font_family = kwargs.get("font_family", FONT)
+    self._font_size = kwargs.get("font_size", FONT_SIZE)
 
-    # Padding and margins
-    self._left = 2
-    self._right = 2
-    self._top = 2
-    self._bottom = 2
-    self._input_height = self.line_height() + 4
-    self._text_height = self.line_height() + 2
+    # Normal font object
+    self._font = tkfont.Font(
+        family=self._font_family,
+        size=self._font_size)
+    # Bold font object
+    self._font_bold = tkfont.Font(
+        weight=tkfont.BOLD,
+        family=self._font_family,
+        size=self._font_size)
+
+    self._input_width = kwargs.get("input_width", INPUT_START_WIDTH)
+    self._input_height = self.line_height() + 2*PADDING
 
     # Create root window
-    f = self._frame = tk.Frame(root)
-    self._frame.grid(row=0, column=0)
+    frame = tk.Frame(root)
+    frame.grid(row=0, column=0)
+    self._frame = frame
 
     # Create gutter input (used as a focus sink; not visible)
-    self._gutter = tk.Entry(f)
+    self._gutter = tk.Entry(frame)
     self._gutter.grid(row=0, column=0, sticky=tk.NW)
 
     # Create primary canvas for displaying the images
-    self._canvas = tk.Canvas(f)
+    self._canvas = tk.Canvas(frame)
     self._canvas.grid(row=0, column=0)
 
     # Create primary input box
-    self._input = tk.Entry(f, font=self._font, width=self._input_width)
+    self._input = tk.Entry(frame, font=self._font, width=self._input_width)
     self._input.grid(row=0, column=0, sticky=tk.NW)
     self._input.bind("<Key-Return>", self._input_enter)
 
     # Configuration after widget construction
     self._input_mode = MODE_NONE
     self._last_input = ""
-    self._image = None          # Current image
     self._images = list(images) # Loaded images
+    self._count = len(images)   # Total number of images
+    self._image = None          # Current image
+    self._index = 0             # Current image index
     self._photo = None          # Underlying PIL photo object
-    self.set_canvas_size(self._compute_size())
+    self.set_canvas_size((self._width, self._height))
 
     self._actions = collections.defaultdict(list)
     self._functions = {}
@@ -259,7 +261,7 @@ class ImageManager:
     "Write mark actions to the given path"
     self._output.append(path)
 
-  def one_em(self):
+  def char_width(self):
     "Return the width of one 'M' character in the current font"
     return self._font.measure('M')
 
@@ -267,6 +269,7 @@ class ImageManager:
     "Return the current font's line height"
     return self._font.metrics()["linespace"]
 
+  @property
   def root(self):
     "Return the root Tk() object"
     return self._root
@@ -289,14 +292,9 @@ class ImageManager:
 
   def set_canvas_size(self, new_size):
     "Set (canvas_width, canvas_height)"
-    w, h = new_size
-    self._canvas["width"] = w
-    self._canvas["height"] = h
-
-  def _compute_size(self):
-    "Return the maximum width and height an image can have"
-    # Canvas is no longer dynamically sized, so just return the existing values
-    return self._width, self._height
+    width, height = new_size
+    self._canvas["width"] = width
+    self._canvas["height"] = height
 
   def path(self):
     "Return the path to the current image"
@@ -304,7 +302,7 @@ class ImageManager:
 
   def _resize_input(self, s):
     "Ensure the input is wide enough to display the string s"
-    max_chrs = int(round(self._width / self.one_em()))
+    max_chrs = int(round(self._width / self.char_width()))
     self._input["width"] = min(max(len(s)+2, INPUT_START_WIDTH), max_chrs)
 
   def _get_image(self, path):
@@ -313,66 +311,102 @@ class ImageManager:
       image = Image.open(path)
     except IOError as e:
       # Failure to load an image is not a fatal error
-      logger.error(f"Failed to open image {path!r}")
+      logger.error("Failed to open image %r", path)
       logger.exception(e)
       return None
     # Determine if we should resize the image
-    cw, ch = self._compute_size() 
-    iw, ih = image.size
+    canvw, canvh = self._width, self._height
+    imgw, imgh = image.size
     want_scale = False
     if self._scale_mode == SCALE_EXACT:
+      # Always scale in exact mode
       want_scale = True
-    elif (iw > cw or ih > ch) and self._scale_mode == SCALE_SHRINK:
+    elif (imgw > canvw or imgh > canvh) and self._scale_mode == SCALE_SHRINK:
+      # Scale in shrink mode if the image is bigger than the canvas
       want_scale = True
     if want_scale:
-      # Resize the image to the desired new width and height
-      s = max(iw/cw, ih/ch)
-      nw, nh = int(iw/s), int(ih/s)
-      logger.debug(f"{path!r}: {iw}x{ih}*{s} = {nw}x{nh} (to fit {cw} {ch})")
-      return image.resize((nw, nh))
+      scale = max(imgw/canvw, imgh/canvh)
+      neww, newh = int(imgw/scale), int(imgh/scale)
+      logger.debug("Scale %r [%d,%d] by %f to [%d,%d] (to fit %d %d)",
+          path, imgw, imgh, scale, neww, newh, canvw, canvh)
+      return image.resize((neww, newh))
     return image
 
-  def _draw_text(self, text, xy=(0, 0), anchor=tk.NW,
-      fg="white", bg="black", border=1, shiftx=2, shifty=2):
-    "Draw text on the canvas with the given parameters"
-    x, y = xy
-    y += self._input_height
-    kws = {"anchor": anchor, "text": text, "font": self._font_bold}
+  # pylint: disable=too-many-arguments
+  def _draw_text(self,
+      text,
+      pos=(0, 0),       # Where do we put the text?
+      anchor=tk.NW,     # How is the text anchored to its position?
+      fgcolor="white",  # Foreground (text) color
+      bgcolor="black",  # Background (shadow) color
+      border=1,         # Shadow size (distance between fg and bg)
+      shiftx=2,         # Nudge text by this amount horizontally
+      shifty=2,         # Nudge text by this amount vertically
+      bold=True
+    ):
+    """
+    Draw text on the canvas with the given parameters. Returns the Tkinter IDs
+    for the items created. The last ID is always the foreground text.
+    """
+    def draw_string(textx, texty, fill):
+      "Helper function: actually draw the text"
+      return self._canvas.create_text(textx+shiftx, texty+shifty,
+          fill=fill,
+          anchor=anchor,
+          text=text,
+          font=self._font_bold if bold else self._font)
+    posx, posy = pos
+    # FIXME: Calling code should compensate for the input box size
+    posy += self._input_height # Don't cover the input box
     bg_points = (
-      (x-border, y-border),
-      (x-border, y+border),
-      (x+border, y-border),
-      (x+border, y+border)
-    )
-    for bx, by in bg_points:
-      self._canvas.create_text(bx+shiftx, by+shifty, fill=bg, **kws)
-    self._canvas.create_text(x+shiftx, y+shifty, fill=fg, **kws)
+      (posx-border, posy-border),
+      (posx-border, posy+border),
+      (posx+border, posy-border),
+      (posx+border, posy+border))
+    ids = []
+    for bgx, bgy in bg_points:
+      ids.append(draw_string(bgx, bgy, bgcolor))
+    ids.append(draw_string(posx, posy, fgcolor))
+    return ids
 
   def _draw_current(self):
     "Draw self._image to self._canvas"
-    w, h = self._compute_size()
     path = self._images[self._index]
+    # NOTE: We store the PhotoImage in a self attribute because create_image()
+    # does not properly take ownership of the reference and the PhotoImage
+    # object ends up being deallocated almost immediately.
     self._photo = ImageTk.PhotoImage(self._image)
+    # Clear the canvas
     self._canvas.delete(tk.ALL)
-    self._canvas.create_image(w/2, h/2, image=self._photo, anchor=tk.CENTER)
+    # Display the image, centered
+    self._canvas.create_image(
+        self._width/2,
+        self._height/2,
+        image=self._photo,
+        anchor=tk.CENTER)
+
     text_lines = []
     if self._enable_text:
-      iw, ih = self._image.size
-      st = os.lstat(path)
-      ts = fromtimestamp(st.st_mtime).strftime("%Y/%m/%d %H:%M:%S")
-      size = format_size(st.st_size)
+      # Add standard text for path, size, and filetime
+      imgw, imgh = self._image.size
+      stat = os.lstat(path)
+      tstamp = format_timestamp(stat.st_mtime, "%Y/%m/%d %H:%M:%S")
+      size = format_size(stat.st_size)
       text_lines.extend((
         os.path.basename(path),
-        f"Size: {size}; {iw}x{ih}px",
-        f"Time: {ts}"
-      ))
+        f"Size: {size}; {imgw}x{imgh}px",
+        f"Time: {tstamp}"))
+
+    # Call the text functions to add whatever they want
     for func in self._text_functions:
       logger.debug(f"Text function {func!r} for {path}")
       text = func(path)
-      if type(text) != str: # XXX: HACK
-        text = text.decode("UTF-8")
+      # Ensure text is actually a string (and not a bytes type)
+      if not isinstance(text, str) and hasattr(text, "decode"):
+        text = text.decode()
       text_lines.extend(text.splitlines())
-    logger.debug(f"Drawing lines: {text_lines!r}")
+
+    logger.debug("Drawing %d lines of text: %r", len(text_lines), text_lines)
     if len(text_lines) > 0:
       self._draw_text("\n".join(l for l in text_lines))
 
@@ -380,19 +414,18 @@ class ImageManager:
     "Sets the index and displays the image at that index"
     self._index = index
     path = self._images[index]
-    count = len(self._images)
-    logger.debug("Displaying image {} of {} {!r}".format(index+1, count, path))
-    new_title = "{}/{} {}".format(index+1, len(self._images), path)
+    logger.debug("Displaying image %s of %s %r", index+1, self._count, path)
+    new_title = "{}/{} {}".format(index+1, self._count, path)
     self._image = self._get_image(path)
     if self._image is None:
-      logger.error(f"Failed to load {path!r}!")
+      logger.error("Failed to load %r!", path)
       new_title = "ERROR! " + new_title
       self._canvas.delete(tk.ALL)
     else:
       self._draw_current()
-    self.root().title(new_title)
+    self.root.title(new_title)
 
-  def redraw_image(self):
+  def redraw(self):
     "Recomputes and redraws the current image"
     self.set_index(self._index)
 
@@ -406,7 +439,7 @@ class ImageManager:
       action = args[1]
     else:
       raise ValueError(f"invalid arguments to _action; got {args!r}")
-    logger.info("{}: {}".format(path, " ".join(action)))
+    logger.info("%s: %s", path, " ".join(action))
     self._actions[path].append(action)
     for fpath in self._output:
       with open(fpath, "at") as fobj:
@@ -424,9 +457,10 @@ class ImageManager:
   def _do_find_image(self, prefix):
     "Return the path to the next image starting with prefix, if found"
     for image_path in iterate_from(self._images, self._index):
-      base, name = os.path.split(image_path)
+      name = os.path.basename(image_path)
       if name.startswith(prefix):
         return image_path
+    return None
 
   def _handle_command(self, command):
     "Handle a command entered via the input box"
@@ -434,26 +468,25 @@ class ImageManager:
     cmd, args = command, ""
     if len(cmd_and_args) == 2:
       cmd, args = cmd_and_args
-    logger.info("Handling command {!r} (args {!r})".format(cmd, args))
+    logger.info("Handling command %r (args %r)", cmd, args)
     if cmd in ("i", "inspect"):
       # Inspect various things
-      cw, ch = self.canvas_size()
-      logger.info("Root WxH: {}x{}".format(self._width, self._height))
-      logger.info("Canvas WxH: {}x{}".format(cw, ch))
-      logger.info("Input width={}".format(self._input_width))
+      canvw, canvh = self.canvas_size()
+      logger.info("Root WxH: %sx%s", self._width, self._height)
+      logger.info("Canvas WxH: %sx%s", canvw, canvh)
+      logger.info("Input width=%s", self._input_width)
       if self._image is not None:
-        logger.info("Image size: {}".format(self._image.size))
+        logger.info("Image size: %s", self._image.size)
       else:
         logger.info("No image displayed")
     elif cmd in ("h", "help"):
       self._show_help(None)
-      self._root.after(1000, self.redraw_image)
     else:
       self._input_set_text("Invalid command {!r}".format(command), select=False)
 
   # Tkinter callback and manual call
   @blocked_by_input
-  def _prev_image(self, event=None):
+  def _prev_image(self, event):
     "Navigate to the previous image"
     index = self._index - 1
     if index < 0:
@@ -462,7 +495,7 @@ class ImageManager:
 
   # Tkinter callback and manual call
   @blocked_by_input
-  def _next_image(self, event=None):
+  def _next_image(self, event):
     "Navigate to the next image"
     index = self._index + 1
     if index >= len(self._images):
@@ -472,41 +505,40 @@ class ImageManager:
 
   # Tkinter callback
   @blocked_by_input
-  def _next_many(self, *args):
+  def _next_many(self, event):
     "Navigate to the 10th next image"
     self.set_index((self._index + 10) % len(self._images))
 
   # Tkinter callback
   @blocked_by_input
-  def _prev_many(self, *args):
+  def _prev_many(self, event):
     "Navigate to the 10th previous image"
     self.set_index((self._index - 10) % len(self._images))
 
   # Tkinter callback
   @blocked_by_input
-  def _rename_image(self, *args):
+  def _rename_image(self, event):
     "Rename the current image"
-    base, name = os.path.split(self.path())
     self._input_mode = MODE_RENAME
-    self._input_set_text(name, select=True)
+    self._input_set_text(os.path.basename(self.path()), select=True)
 
   # Tkinter callback
   @blocked_by_input
-  def _delete_image(self, *args):
+  def _delete_image(self, event):
     "Delete the current image"
     self._action(("DELETE",))
-    self._next_image()
+    self._next_image(event)
 
   # Tkinter callback
   @blocked_by_input
-  def _go_to_image(self, *args):
+  def _go_to_image(self, event):
     "Navigate to the image with the given number"
     self._input_mode = MODE_SET_IMAGE
     self._input_set_text(self._last_input, select=True)
 
   # Tkinter callback
   @blocked_by_input
-  def _find_image(self, *args):
+  def _find_image(self, event):
     "Show the first image filename starting with a given prefix"
     self._input_mode = MODE_GOTO
     self._input_set_text(self._last_input, select=True)
@@ -528,13 +560,17 @@ class ImageManager:
 
   # Tkinter callback
   @blocked_by_input
-  def _show_help(self, *args):
+  def _show_help(self, event):
     "Display help text to the user"
     sys.stderr.write(HELP_KEY_ACTIONS)
     help_text = HELP_KEY_ACTIONS
-    help_text += "\n" + "Text will disappear after 10 seconds"
-    self._draw_text(help_text, xy=(self._width/2, 0), anchor=tk.N)
-    self._root.after(10000, self.redraw_image)
+    help_text += "\nPress any key to clear. Text will clear automatically" \
+        " after 10 seconds"
+    ids = self._draw_text(help_text, (self._width/2, 0), anchor=tk.N)
+    def clear_item_func(*_):
+      for itemid in ids:
+        self._canvas.delete(itemid)
+    self._root.after(10000, clear_item_func)
 
   # Tkinter callback
   @blocked_by_input
@@ -545,7 +581,14 @@ class ImageManager:
     elif event.char == 'c':
       self._height += 1
     print(f"Height: {self._height}")
-    self.set_index(self._index)
+    self.redraw()
+
+  # Tkinter callback
+  @blocked_by_input
+  def _toggle_text(self, event):
+    "Toggle base text display"
+    self._enable_text = not self._enable_text
+    self.redraw()
 
   # Tkinter callback
   @blocked_by_input
@@ -559,7 +602,7 @@ class ImageManager:
       self._scale_mode = SCALE_NONE
     notif = f"Scaling set to {self._scale_mode}"
     self._input_set_text(notif, select=False)
-    self.redraw_image() # Redraw the current image
+    self.redraw()
 
   # Tkinter callback
   def _update_window(self, event):
@@ -567,9 +610,9 @@ class ImageManager:
     logger.debug(f"_update_window on {event.widget!r}: {event}")
     if event.widget == self._root:
       logger.debug(f"event: {dir(event)}")
-      self._width = event.width - SCREEN_WIDTH_ADJUST
-      self._height = event.height# - SCREEN_HEIGHT_ADJUST
-      self.redraw_image() # Redraw the current image
+      self._width = event.width
+      self._height = event.height
+      self.redraw()
 
   # Tkinter callback
   def _input_enter(self, *args):
@@ -584,7 +627,7 @@ class ImageManager:
       base, name = os.path.split(self.path())
       if len(value) > 0 and name != value:
         new_path = os.path.join(base, value)
-        logger.info("Rename: {!r} to {!r}".format(self.path(), new_path))
+        logger.info("Rename: %r to %r", self.path(), new_path)
         self._action(("RENAME", new_path))
         self._next_image(*args)
       else:
@@ -611,7 +654,7 @@ class ImageManager:
     self._input_mode = MODE_NONE
 
   # Tkinter callback
-  def escape(self, event=None):
+  def escape(self, event):
     "Either cancel rename or exit the application"
     if self._root.focus_get() == self._input:
       self._input_mode = MODE_NONE
@@ -621,9 +664,9 @@ class ImageManager:
       self.close(event)
 
   # Tkinter callback
-  def close(self, event=None):
+  def close(self, event):
     "Exit the application"
-    self.root().quit()
+    self.root.quit()
 
 def get_images(*paths, recursive=False):
   "Return a list of all images found in the given paths"
@@ -632,20 +675,19 @@ def get_images(*paths, recursive=False):
       yield path
     elif os.path.isdir(path):
       if recursive:
-        for r, ds, fs in os.walk(path):
-          for f in fs:
-            yield os.path.join(r, f)
+        for root, dirs, files in os.walk(path):
+          for file in files:
+            yield os.path.join(root, file)
       else:
-        for i in os.listdir(path):
-          yield os.path.join(path, i)
+        for item in os.listdir(path):
+          yield os.path.join(path, item)
     else:
       raise ValueError(f"Invalid object {path!r}")
 
   images = []
   for name in paths:
     for filepath in list_path(name):
-      mt, me = mimetypes.guess_type(filepath)
-      if mt is not None and mt.split("/")[0] == "image":
+      if is_image(filepath):
         images.append(filepath)
 
   # Filter out the images that can't be loaded
@@ -661,6 +703,18 @@ def get_images(*paths, recursive=False):
   images = filtered_images
 
   return images
+
+def build_mark_write_function(path):
+  "Create a mark function to write an image to `path`"
+  mode = "a+t" if os.path.isfile(path) else "wt"
+  logger.debug("Building mark function for %r mode %s", path, mode)
+  def mark_func(image_path):
+    "Mark function: write image path to the path given"
+    with open(path, mode) as fobj:
+      fobj.write(image_path)
+      fobj.write(os.linesep)
+      fobj.close()
+  return mark_func
 
 def build_text_function(program_string):
   "Build a text function from a given program string"
@@ -680,42 +734,96 @@ def build_text_function(program_string):
     else:
       args.append(path)
     cmd = subprocess.list2cmdline(args)
-    p = Popen(args, stdin=p_stdin, stdout=PIPE, stderr=PIPE)
-    out, err = p.communicate(input=p_input)
-    if p.returncode != 0:
-      logger.error(f"Command {cmd!r} exited nonzero {p.returncode}")
+    proc = Popen(args, stdin=p_stdin, stdout=PIPE, stderr=PIPE)
+    out, err = proc.communicate(input=p_input)
+    if proc.returncode != 0:
+      logger.error(f"Command {cmd!r} exited nonzero {proc.returncode}")
     if len(err) > 0:
       logger.warning(f"Program {cmd!r} wrote to stderr:")
       logger.warning(err.decode().rstrip())
     return out.decode()
   return text_func
 
+def _print_help(argparser, args):
+  "Print help text"
+
+  if args.help or args.help_all:
+    argparser.print_help()
+    sys.stderr.write("""
+Note that this program does not actually rename or delete files. Marks, rename
+commands, and delete commands are written to -o,--out immediately and to the
+controlling terminal after the main loop exits.
+""")
+  else:
+    argparser.print_usage()
+
+  if args.help_sort or args.help_all:
+    sys.stderr.write("""
+Sorting actions beginning with "r" simulate passing --reverse. For example,
+passing "--sort=rname" is equivalent to "--sort=name --reverse".
+""")
+
+  if args.help_text_from or args.help_all:
+    sys.stderr.write("""
+Use --add-text-from to add custom text to each image. The output of the command
+`<PROG> "<image-path>"` is added to the text displayed on the image. If <PROG>
+starts with a pipe "|", then <image-path> is written to <PROG> and the output
+is displayed. Anything <PROG> writes to stderr is displayed directly to the
+terminal. Be careful with quoting!
+""")
+
+  if args.help_write or args.help_all:
+    sys.stderr.write("""
+Use --write1 <PATH> or --write2 <PATH> to write the current image's file path
+to <PATH> whenever the 1 or 2 key is pressed, respectively. <PATH> is opened
+for appending if it's a normal file and writing otherwise. This is useful for
+having the keypress trigger some other program. For example,
+  --write1 >(while read l; do scp "$l" user@example.com:/home/user; done)
+will copy the marked files to the /home/user directory on example.com.
+""")
+
+  if args.help_keys or args.help_all:
+    sys.stderr.write(HELP_KEY_ACTIONS)
+
 def main():
   "Entry point"
-  ap = argparse.ArgumentParser(add_help=False)
-  ap.add_argument("images", nargs="*",
+  ap = argparse.ArgumentParser(usage="%(prog)s [arguments] [images ...]",
+      add_help=False)
+  ag = ap.add_argument_group("image selection")
+  ag.add_argument("images", nargs="*",
       help="files (or directories) to examine")
-  ap.add_argument("-R", "--recurse", action="store_true",
+  ag.add_argument("-R", "--recurse", action="store_true",
       help="descend into directories recursively to find images")
-  ap.add_argument("-F", "--files", metavar="PATH",
+  ag.add_argument("-F", "--files", metavar="PATH",
       help="read images from %(metavar)s")
-  ap.add_argument("--width", type=int,
+
+  ag = ap.add_argument_group("display options")
+  ag.add_argument("--width", type=int,
       help="window width (default: full screen)")
-  ap.add_argument("--height", type=int,
+  ag.add_argument("--height", type=int,
       help="window height (default: full screen)")
-  ap.add_argument("--font-family",
+  ag.add_argument("--font-family",
       help="override font (default: monospace)")
-  ap.add_argument("--font-size", type=int,
+  ag.add_argument("--font-size", type=int,
       help="override font size, in points")
-  ap.add_argument("--add-text", action="store_true",
+  ag.add_argument("--add-text", action="store_true",
       help="display image name and attributes over the image")
-  ap.add_argument("--add-text-from", metavar="PROG",
-      help="display text from program %(metavar)s (see below)")
-  ap.add_argument("-o", "--out", metavar="PATH",
-      help="also write actions to %(metavar)s")
-  ag = ap.add_argument_group("MARK-1 customisation")
+  ag.add_argument("--add-text-from", metavar="PROG",
+      help="display text from program %(metavar)s (see --help-text-from)")
+  ag.add_argument("--help-text-from", action="store_true",
+      help="show help text for --add-text-from")
+
+  ag = ap.add_argument_group("output control")
+  ag.add_argument("-o", "--out", metavar="PATH",
+      help="write actions to stdout and %(metavar)s")
+
+  ag = ap.add_argument_group("MARK actions")
   ag.add_argument("--write1", metavar="PATH",
-      help="write MARK-1 entries to %(metavar)s")
+      help="write current image path to %(metavar)s on MARK-1")
+  ag.add_argument("--write2", metavar="PATH",
+      help="write current image path to %(metavar)s on MARK-2")
+  ag.add_argument("--help-write", action="store_true",
+      help="show help text about mark operations")
 
   ag = ap.add_argument_group("sorting")
   mg = ag.add_mutually_exclusive_group()
@@ -723,47 +831,37 @@ def main():
       choices=SORT_MODES,
       help="sort images by %(metavar)s: %(choices)s (default %(default)s)")
   ag.add_argument("-r", "--reverse", action="store_true",
-      help="reverse sorting order")
+      help="reverse sorting order; sort descending instead of ascending")
   mg.add_argument("-T", action="store_true", help="sort by time (--sort=time)")
   mg.add_argument("-S", action="store_true", help="sort by size (--sort=size)")
+  mg.add_argument("--help-sort", action="store_true",
+      help="show help text about sorting")
 
   ag = ap.add_argument_group("logging")
-  ag = ag.add_mutually_exclusive_group()
-  ag.add_argument("-v", "--verbose", action="store_true",
+  mg = ag.add_mutually_exclusive_group()
+  mg.add_argument("-v", "--verbose", action="store_true",
       help="verbose output")
-  ag.add_argument("-d", "--debug", action="store_true",
+  mg.add_argument("-d", "--debug", action="store_true",
       help="alias for --verbose")
-  ap.add_argument("-h", "--help", action="store_true",
-      help="show this help and exit")
+
+  ag = ap.add_argument_group("other help text")
+  ag.add_argument("-h", "--help", action="store_true",
+      help="show this help text")
+  ag.add_argument("--help-keys", action="store_true",
+      help="show usage and keypress behaviors")
+  ag.add_argument("--help-all", action="store_true",
+      help="show all help text")
   args = ap.parse_args()
-  if args.help:
-    ap.print_help()
-    sys.stderr.write("""
-Note that this program does not actually rename or delete anything. Instead,
-the operations are written to stdout for the user to perform afterwards. Note
-that actions are written to -o,--out immediately and to stdout only after the
-program exits.
-""")
-    sys.stderr.write("""
-Sorting actions beginning with "r" simulate passing --reverse. For example,
-passing "--sort=rname" is equivalent to "--sort=name --reverse".
-""")
-    sys.stderr.write("""
-Use --text-program to add custom text to each image. The output of the command
-`<PROG> "<image-path>"` is added to the text displayed on the image. If <PROG>
-starts with a pipe "|", then <image-path> is written to <PROG> and the output
-is displayed. Anything <PROG> writes to stderr is displayed directly to the
-terminal. Be careful with quoting!
-""")
-    sys.stderr.write("""
-Use --write1 <PATH> to write the current image to <PATH> and immediately flush.
-If <PATH> is a file, then it is opened for appending. Otherwise, it is opened
-for writing. This is useful for having MARK-1 trigger some other program. For
-example, the following line
-  --write1 >(while read l; do scp "$l" user@example.com:/home/user; done)
-will copy the marked files to /home/user on the server example.com.
-""")
-    sys.stderr.write(HELP_KEY_ACTIONS)
+
+  show_help = any((
+    args.help,
+    args.help_text_from,
+    args.help_write,
+    args.help_sort,
+    args.help_keys,
+    args.help_all))
+  if show_help:
+    _print_help(ap, args)
     raise SystemExit(0)
 
   if args.files:
@@ -809,56 +907,53 @@ will copy the marked files to /home/user on the server example.com.
       images = reversed(images)
 
   # Construct the application
-  skw = {}
+  mkwargs = {}
   if args.width is not None and args.width > 0:
-    skw["width"] = args.width
+    mkwargs["width"] = args.width
   if args.height is not None and args.height > 0:
-    skw["height"] = args.height
+    mkwargs["height"] = args.height
   if args.add_text:
-    skw["show_text"] = args.add_text
-  if os.path.isfile(Asset("image-x-generic.png")):
-    skw["icon"] = Asset("image-x-generic.png")
+    mkwargs["show_text"] = args.add_text
   if args.font_family is not None:
-    skw["font_family"] = args.font_family
+    mkwargs["font_family"] = args.font_family
   if args.font_size is not None:
-    skw["font_size"] = args.font_size
-  s = ImageManager(images, **skw)
+    mkwargs["font_size"] = args.font_size
+  icopath = get_asset_path("image-x-generic.png")
+  if os.path.exists(icopath):
+    mkwargs["icon"] = get_asset_path("image-x-generic.png")
+  manager = ImageManager(images, **mkwargs)
 
+  # Register output file, if given
   if args.out is not None:
     if os.path.isfile(args.out) and os.stat(args.out).st_size > 0:
       logger.warning("%r: file exists; deleting", args.out)
       os.truncate(args.out, 0)
-    s.add_output_file(args.out)
+    manager.add_output_file(args.out)
 
-  # Add MARK-1 function
+  # Register functions to call when a mark key is pressed
   if args.write1:
-    mode = "a+t" if os.path.isfile(args.write1) else "wt"
-    def mark_func(path):
-      "Mark function: write image path to the write1 file"
-      with open(args.write1, mode) as fobj:
-        fobj.write(path)
-        fobj.write("\n")
-        fobj.flush()
-    s.add_mark_function(mark_func, '1')
+    manager.add_mark_function(build_mark_write_function(args.write1), '1')
+  if args.write2:
+    manager.add_mark_function(build_mark_write_function(args.write2), '2')
 
-  # Add text function
+  # Register text function
   if args.add_text_from is not None:
-    s.add_text_function(build_text_function(args.add_text_from))
+    manager.add_text_function(build_text_function(args.add_text_from))
 
   # Load and display the first image
-  s.set_index(0)
+  manager.set_index(0)
 
   # Don't run the main loop if we're interactive
   if not sys.flags.interactive:
-    s.root().mainloop()
-    w = csv.writer(sys.stdout)
-    for path, actions in s.actions().items():
+    manager.root.mainloop()
+    writer = csv.writer(sys.stdout)
+    for path, actions in manager.actions().items():
       for action in actions:
         row = []
         row.append(action[0])
         row.append(path)
         row.extend(action[1:])
-        w.writerow(row)
+        writer.writerow(row)
 
 if __name__ == "__main__":
   main()
