@@ -8,42 +8,46 @@ import os
 import shutil
 import sys
 import unittest
+from PIL import Image, ImageDraw
 
 TEST_PATH = os.path.dirname(sys.argv[0])
 
 sys.path.append(os.path.join(TEST_PATH, os.path.pardir))
 import imagemanage
 
-# External paths, configurable via environment variables
-PATH_ICONS = os.environ.get("ICONS_PATH", "/usr/share/icons")
-ICON_THEME = os.environ.get("ICONS_THEME", "Yaru")
-ICON_SIZE = os.environ.get("ICONS_SIZE", "256x256")
+def _build_dataset(test_path, n=8, size=(32, 32)):
+  "Create images for testing"
+  for nr in range(n):
+    name = "image-{}x{}-{:02d}.png".format(size[0], size[1], nr)
+    image = Image.new("RGB", size, color="black")
+    draw = ImageDraw.ImageDraw(image)
+    draw.text((0, 0), name)
+    image.save(os.path.join(test_path, name))
 
-def debug(msg):
-  if os.environ.get("DEBUG"):
-    sys.stderr.write("DEBUG: " + msg + "\n")
-
-class TestYaru(unittest.TestCase):
+class TestImages(unittest.TestCase):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, **kwargs)
-    self._yaru_path = os.path.join(PATH_ICONS, ICON_THEME, ICON_SIZE)
-    self._path = os.path.join(TEST_PATH, "test-Yaru")
-    print(f"Source: {self._yaru_path}")
-    print(f"Dest: {self._path}")
-    debug(self.id())
-    debug("\n".join(f"{k}={getattr(self, k)!r}" for k in dir(self)))
+    self._path = os.path.join(TEST_PATH, f"test-images")
+    self._icount = int(os.environ.get("IMAGE_COUNT", "8"))
+    self._isize = (32, 32) # TODO: configurable
 
   def setUp(self):
-    if not os.path.exists(self._yaru_path):
-      raise unittest.SkipTest(f"{self._yaru_path} does not exist")
-    shutil.copytree(self._yaru_path, self._path)
-    print(f"Copied {self._yaru_path} to {self._path}")
+    path = os.path.join(self._path, "{}x{}".format(*self._isize))
+    if not os.path.exists(path):
+      os.makedirs(path)
+    _build_dataset(path, self._icount, self._isize)
 
   def tearDown(self):
-    shutil.rmtree(self._path)
+    if not os.environ.get("TEST_KEEP"):
+      shutil.rmtree(self._path)
 
-  def test_first(self):
-    print(self)
+  def test_get_images(self):
+    images_none = imagemanage.get_images(self._path)
+    self.assertFalse(images_none)
+    images_all = imagemanage.get_images(self._path, recursive=True)
+    self.assertTrue(images_all)
+
+  # TODO: test the actual class
 
 class TestUtilityFunctions(unittest.TestCase):
   def test_format_size(self):
@@ -71,13 +75,13 @@ class TestUtilityFunctions(unittest.TestCase):
     self.assertEqual(iterate_from(l, 1), l[2:] + l[:2])
     self.assertEqual(iterate_from(l, len(l)-1), l)
 
-  def test_find_images(self):
-    # TODO
-    pass
-
-  def test_mark1_support(self):
-    # TODO
-    pass
+  def test_is_image(self):
+    self.assertTrue(imagemanage.is_image("foo.png"))
+    self.assertTrue(imagemanage.is_image("foo.jpg"))
+    self.assertTrue(imagemanage.is_image("foo.jpeg"))
+    self.assertTrue(imagemanage.is_image("foo.gif"))
+    self.assertFalse(imagemanage.is_image("foo"))
+    self.assertFalse(imagemanage.is_image("foo.mpg"))
 
 if __name__ == "__main__":
   unittest.main()
