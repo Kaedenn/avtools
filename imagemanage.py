@@ -694,8 +694,8 @@ def get_images(*paths, recursive=False):
   filtered_images = []
   for idx, image in enumerate(images):
     try:
-      Image.open(image)
-      filtered_images.append(image)
+      with Image.open(image):
+        filtered_images.append(image)
     except (IOError, ValueError) as e:
       logger.error(f"Failed to open image {idx} {image!r}")
       logger.error("Original exception below:")
