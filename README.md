@@ -7,6 +7,8 @@ Collection of stand-alone programs for managing media
 | `avinfo.py` | Extract information about audio or video files |
 | `avmontage.py` | Create a collage of equally-spaced frames from a video file |
 | `imagemanage.py` | Mechanism for selecting images for modification |
+| `images2video.py` | Encode a bunch of images into a video |
+| `webptool.py` | Split a WebP file into images or combine images to a WebP file |
 
 # avinfo.py - Extract information from a media file
 
@@ -132,3 +134,18 @@ TODO: Description
 
 TODO
 
+# images2video.py - Combine images to a video
+
+TODO: Description
+
+## Command-line arguments
+
+TODO
+
+# webptool.py - Split or create WebP files
+
+TODO: Description
+
+## Command-line arguments
+
+TODO
