@@ -904,7 +904,7 @@ def main():
     logger.debug(f"Sorting by {sort_mode} (reverse={sort_rev})")
     images.sort(key=sort_func)
     if sort_rev:
-      images = reversed(images)
+      images = list(reversed(images))
 
   # Construct the application
   mkwargs = {}
