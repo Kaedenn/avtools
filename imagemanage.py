@@ -248,7 +248,7 @@ class ImageManager:
     self._input_mode = MODE_NONE
     self._last_input = ""
     self._images = list(images) # Loaded images
-    self._count = len(images)   # Total number of images
+    self._count = len(self._images)   # Total number of images
     self._image = None          # Current image
     self._index = 0             # Current image index
     self._photo = None          # Underlying PIL photo object

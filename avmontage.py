@@ -6,10 +6,9 @@ Montage a video file into a collage of equally-spaced frames.
 
 # TODO/FIXME:
 # *) Allow user to configure paths to ffmpeg, ffprobe
+# *) Allow user to select avconv over ffmpeg
 # *) Add overwrite pre-check and configuration so ffmpeg/avconv doesn't prompt
-# for user input and error when user selects N.
-# *) Adjust -o,--out help text to indicate PATH could be a directory.
-# *) Utilize mediainfo if nb_frames is not present
+#    for user input and error when user selects N.
 
 import argparse
 import errno
