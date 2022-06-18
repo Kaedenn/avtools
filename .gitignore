@@ -1,3 +1,6 @@
+# Protected files
+.envrc
+
 # Swap / temporary files
 *.sw[po]
 README*.html
