@@ -11,7 +11,6 @@ Montage a video file into a collage of equally-spaced frames.
 #    for user input and error when user selects N.
 
 import argparse
-import errno
 import json
 import logging
 import os
@@ -20,8 +19,7 @@ import subprocess
 import sys
 
 class VideoError(Exception):
-  def __init__(self, cause):
-    super(VideoError, self).__init__(cause)
+  "Raised when something bad happens while processing the video"
   def __str__(self):
     return "Video error: " + super(VideoError, self).__str__()
   def __repr__(self):
@@ -49,11 +47,12 @@ class ColorFormatter(logging.Formatter):
       record.levelname = "\033[{}m{}\033[0m".format(color, record.levelname)
     return super(ColorFormatter, self).format(record)
 
+def file_size(filepath):
+  "Get the file's size in bytes"
+  return os.stat(filepath).st_size
+
 def format_timestamp(sec):
-  "Convert seconds (int, float) to a timestamp HH:MM:SS string"
-  frac = 0
-  if sec != int(sec):
-    frac = sec - int(sec)
+  "Convert seconds (int or float) to a timestamp HH:MM:SS string"
   sec = int(sec)
   ns = sec % 60
   nm = sec // 60 % 60
@@ -86,10 +85,10 @@ def _parse_frame_rate(fr):
     fn, fd = float(fr), 1
   if fd != 0:
     result = fn / fd
-    logger.debug("Frame-rate {!r} -> {} fps".format(fr, result))
+    logger.debug("Frame-rate %r -> %s fps", fr, result)
   else:
     result = None
-    logger.debug("Frame-rate {!r} -> None; divide by zero".format(fr))
+    logger.debug("Frame-rate %r -> None; divide by zero", fr)
   return result
 
 def _find_nb_frames(path):
@@ -105,6 +104,7 @@ def _find_nb_frames(path):
   except subprocess.CalledProcessError as e:
     logger.error("mediainfo failed:")
     logger.exception(e)
+  return None
 
 def _fixup_probe(path, vformat, vstreams):
   "Attempt to fix common issues with ffprobe output"
@@ -136,7 +136,7 @@ def probe_video(path, **kwargs):
   "Probe <path> and return pair of <file-info>, <stream-info> dicts"
   cmd = ["ffprobe", "-show_format", "-show_streams", "-of", "json", "-v", "error"]
   cmd.append(path)
-  logger.debug("Running {}".format(subprocess.list2cmdline(cmd)))
+  logger.debug("Running %s", subprocess.list2cmdline(cmd))
   vdata = json.loads(subprocess.check_output(cmd))
   vformat, vstreams = _fixup_probe(path, vdata["format"], vdata["streams"])
   vstream = None
@@ -167,7 +167,8 @@ def extract_video_info(fdata, sdata):
   elif fdata.get("duration", "N/A") != "N/A":
     data["duration"] = fdata["duration"]
   else:
-    raise VideoError(ValueError("Can't find duration from fdata={} sdata={}".format(fdata, sdata)))
+    raise VideoError(ValueError(
+      "Can't find duration from fdata={} sdata={}".format(fdata, sdata)))
 
   # Determine frame count
   if "nb_frames" in sdata:
@@ -186,7 +187,8 @@ def extract_video_info(fdata, sdata):
 
   if data.get("frames") is None:
     # Didn't find the frame count
-    raise VideoError(ValueError("Can't get frame count from fdata={} sdata={}".format(fdata, sdata)))
+    raise VideoError(ValueError(
+      "Can't get frame count from fdata={} sdata={}".format(fdata, sdata)))
 
   return data
 
@@ -221,12 +223,14 @@ def montage(inpath, outpath, nr, nc, **kwargs):
   nf = int(data["frames"])
   sts = format_timestamp(float(data["start_time"]))
   ets = format_timestamp(float(data["duration"]))
+  # pylint: disable=logging-format-interpolation
   logger.debug(f"Size: w={w} h={h}")
   logger.debug(f"Frames: {nf}")
   logger.debug(f"Start timestamp: {sts}")
   logger.debug(f"Ending timestamp: {ets}")
   logger.debug(f"Frame selection interval: {nr*nc} over {nf} frames")
   logger.debug(f"Frame selection interval: one each {nf//(nr*nc)} frames")
+  # pylint: enable=logging-format-interpolation
 
   # Calculate frame width and height
   fw, fh = w, h
@@ -246,9 +250,9 @@ def montage(inpath, outpath, nr, nc, **kwargs):
     fh = h * scale
 
   # Build the ffmpeg command line
-  logger.info("filesize: {}".format(format_bytes(os.stat(inpath).st_size)))
-  logger.info("isize: {}x{}, osize={}x{}".format(w, h, fw, fh))
-  logger.info("frames: {} ({} to {})".format(nf, sts, ets))
+  logger.info("filesize: %s", format_bytes(os.stat(inpath).st_size))
+  logger.info("isize: %sx%s, osize=%sx%s", w, h, fw, fh)
+  logger.info("frames: %s (%s to %s)", nf, sts, ets)
   func = "not(mod(n\\,{}))".format(nf // (nr * nc))
   expr = "select={},scale={}:{},tile={nc}x{nr}".format(func, fw, fh, nr=nr, nc=nc)
   cmd = ["ffmpeg", "-ss", sts]
@@ -262,11 +266,11 @@ def montage(inpath, outpath, nr, nc, **kwargs):
     cmd.extend(["-v", "warning"])
   if ffargs is not None:
     cmd.extend(ffargs)
-  logger.info("Running {}".format(subprocess.list2cmdline(cmd)))
+  logger.info("Running %s", subprocess.list2cmdline(cmd))
   if not kwargs.get("dry", False):
     subprocess.check_call(cmd)
   else:
-    logger.info("Dry run; not executing {}".format(subprocess.list2cmdline(cmd)))
+    logger.info("Dry run; not executing %s", subprocess.list2cmdline(cmd))
 
   # Overlay text if requested
   if text:
@@ -274,7 +278,7 @@ def montage(inpath, outpath, nr, nc, **kwargs):
     lines.append(ets)
     lines.append(format_bytes(os.stat(inpath).st_size))
     tstr = "\n".join(lines)
-    logger.info("Embedding the following text:\n{}".format(tstr))
+    logger.info("Embedding the following text:\n%s", tstr)
     fgtext_file = ".temp-{}-{}.txt".format(os.path.basename(outpath), os.getpid())
     open(fgtext_file, "w").write(tstr)
     fgraph = "drawtext=font=Sans:fontsize=18:textfile={}:x=1:y=1".format(fgtext_file)
@@ -283,12 +287,12 @@ def montage(inpath, outpath, nr, nc, **kwargs):
       cmd.extend(["-v", "warning"])
     if ffargs is not None:
       cmd.extend(ffargs)
-    logger.info("Running {}".format(subprocess.list2cmdline(cmd)))
+    logger.info("Running %s", subprocess.list2cmdline(cmd))
     if not kwargs.get("dry", False):
       subprocess.check_call(cmd)
       os.rename(outpath + "-2.png", outpath)
     else:
-      logger.info("Dry run; not executing {}".format(subprocess.list2cmdline(cmd)))
+      logger.info("Dry run; not executing %s", subprocess.list2cmdline(cmd))
     os.unlink(fgtext_file)
 
 def main():
@@ -304,38 +308,42 @@ filename with ".png" appended. If -o,--out is a directory, then the generated
 files will be placed inside it. It is an error to pass multiple inputs and pass
 a filename to -o,--out.
   """)
-  ap.add_argument("path", nargs="+",
-                  help="video file(s) to montage")
-  ap.add_argument("-I", "--iarg", metavar="ARG", action="append",
-                  help="pass ARG to ffmpeg (before -i) (can be used more than once)")
-  ap.add_argument("-O", "--oarg", metavar="ARG", action="append",
-                  help="pass ARG to ffmpeg (after -i) (can be used more than once)")
-  ap.add_argument("-o", "--out", metavar="PATH",
-                  help="output montage image path (default: input.png)")
-  ap.add_argument("-r", "--rows", type=int, default=3, metavar="N",
-                  help="number of rows (default: %(default)s)")
-  ap.add_argument("-c", "--cols", type=int, default=4, metavar="N",
-                  help="number of cols (default: %(default)s)")
-  ap.add_argument("-s", "--scale", type=float, metavar="P",
-                  help="scale frames by an amount between 0 and 1")
-  ap.add_argument("-W", "--width", type=int, metavar="N",
-                  help="force output to be N pixels wide")
-  ap.add_argument("-H", "--height", type=int, metavar="N",
-                  help="force output to be N pixels tall")
-  ap.add_argument("-t", "--text", action="store_true",
-                  help="overlay text onto the output")
-  ap.add_argument("-n", "--no-overwrite", action="store_true",
-                  help="skip entries that would overwrite files")
-  ap.add_argument("-C", "--continue-on-error", action="store_true",
-                  help="continue even if ffmpeg/avconv fails")
-  ap.add_argument("-N", "--no-color", action="store_true",
-                  help="do not use color when logging")
-  ap.add_argument("--dry", action="store_true",
-                  help="print what would be done without doing it")
-  ap.add_argument("-v", "--verbose", action="store_true",
-                  help="output more stuff")
-  ap.add_argument("--ffquiet", action="store_true",
-                  help="tell ffmpeg to be quieter")
+  ag = ap.add_argument_group("input file selection")
+  ag.add_argument("path", nargs="*",
+      help="video file(s) to montage")
+  ag = ap.add_argument_group("ffmpeg and output configuration")
+  ag.add_argument("-I", "--iarg", metavar="ARG", action="append",
+      help="pass ARG to ffmpeg (before -i) (can be used more than once)")
+  ag.add_argument("-O", "--oarg", metavar="ARG", action="append",
+      help="pass ARG to ffmpeg (after -i) (can be used more than once)")
+  ag.add_argument("-r", "--rows", type=int, default=3, metavar="N",
+      help="number of rows (default: %(default)s)")
+  ag.add_argument("-c", "--cols", type=int, default=4, metavar="N",
+      help="number of cols (default: %(default)s)")
+  ag.add_argument("-s", "--scale", type=float, metavar="P",
+      help="scale frames by an amount between 0 and 1")
+  ag.add_argument("-W", "--width", type=int, metavar="N",
+      help="force output to be N pixels wide")
+  ag.add_argument("-H", "--height", type=int, metavar="N",
+      help="force output to be N pixels tall")
+  ag.add_argument("-t", "--text", action="store_true",
+      help="overlay text onto the output")
+  ag.add_argument("--ffquiet", action="store_true",
+      help="tell ffmpeg to be quieter")
+  ag = ap.add_argument_group("output behavior")
+  ag.add_argument("-o", "--out", metavar="PATH",
+      help="output montage image path (default: input.png)")
+  ag.add_argument("-n", "--no-overwrite", action="store_true",
+      help="skip entries that would overwrite files")
+  ag.add_argument("-C", "--continue-on-error", action="store_true",
+      help="continue even if ffmpeg/avconv fails")
+  ag.add_argument("--dry", action="store_true",
+      help="print what would be done without doing it")
+  ag = ap.add_argument_group("diagnostics")
+  ag.add_argument("-N", "--no-color", action="store_true",
+      help="do not use color when logging")
+  ag.add_argument("-v", "--verbose", action="store_true",
+      help="output more stuff")
   args = ap.parse_args()
   if not args.no_color:
     logging_format = "%(module)s:%(lineno)s:%(levelname)s: %(message)s"
@@ -357,12 +365,16 @@ a filename to -o,--out.
       ap.error("more than one file: --out must be omitted or a directory")
 
   if len(ffargs) > 0:
-    logger.info("Extracted ffargs {}".format(subprocess.list2cmdline(ffargs)))
-    logger.info("Remaining sys.argv: {}".format(sys.argv))
+    logger.info("Extracted ffargs %s", subprocess.list2cmdline(ffargs))
+    logger.info("Remaining sys.argv: %s", sys.argv)
 
-  count = len(args.path)
+  paths = args.path if args.path else []
+  if not paths:
+    ap.error("no paths given")
+
+  count = len(paths)
   for idx, path in enumerate(args.path):
-    logger.info("{}/{}: {!r}".format(idx+1, count, path))
+    logger.info("%s/%s: %r", idx+1, count, path)
     if not os.path.exists(path):
       ap.error("\"{}\": no such file".format(path))
     out = "{}.png".format(path)
@@ -370,7 +382,7 @@ a filename to -o,--out.
       out = os.path.join(args.out, out) if os.path.isdir(args.out) else args.out
     if os.path.exists(out):
       if args.no_overwrite:
-        logger.warn("File {!r} exists; skipping {!r}".format(out, path))
+        logger.warning("File %s exists; skipping %s", out, path)
         continue
       # ffmpeg/avconv will prompt the user for overwriting
     margs = (path, out, args.rows, args.cols)
@@ -388,11 +400,11 @@ a filename to -o,--out.
       mkwargs["scale"] = args.scale
     if args.dry is not None:
       mkwargs["dry"] = args.dry
-    logger.debug("montage(*{}, **{})".format(margs, mkwargs))
+    logger.debug("montage(*%s, **%s)", margs, mkwargs)
     try:
       montage(*margs, **mkwargs)
     except (VideoError, subprocess.CalledProcessError) as e:
-      logger.error("Fatal error while parsing {}".format(repr(path)))
+      logger.error("Fatal error while parsing %s", repr(path))
       logger.error(str(e))
       if not args.continue_on_error:
         raise
