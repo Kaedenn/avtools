@@ -98,12 +98,12 @@ Key actions:
 """
 
 def get_asset_path(name):
-  "Get the file path to the named asset"
+  """Get the file path to the named asset"""
   self_path = os.path.dirname(os.path.realpath(sys.argv[0]))
   return os.path.join(self_path, ASSET_PATH, name)
 
 def format_size(nbytes, places=2):
-  "Format a number of bytes"
+  """Format a number of bytes"""
   bases = ["B", "KB", "MB", "GB", "TB", "PB"]
   base = 0
   curr = nbytes
@@ -117,11 +117,11 @@ def format_size(nbytes, places=2):
   return f"{curr} {bases[base]}"
 
 def format_timestamp(tstamp, formatspec):
-  "Format a numeric timestamp"
+  """Format a numeric timestamp"""
   return datetime.datetime.fromtimestamp(tstamp).strftime(formatspec)
 
 def iterate_from(item_list, start_index):
-  "Iterate over an entire list, cyclically, starting at the given index + 1"
+  """Iterate over an entire list, cyclically, starting at the given index + 1"""
   curr = start_index + 1
   while curr < len(item_list):
     yield item_list[curr]
@@ -133,7 +133,7 @@ def iterate_from(item_list, start_index):
   yield item_list[start_index]
 
 def is_image(filepath):
-  "True if the string looks like it refers to an image file"
+  """True if the string looks like it refers to an image file"""
   mtype = mimetypes.guess_type(filepath)[0]
   if mtype is not None:
     mcat = mtype.split("/")[0]
@@ -142,7 +142,7 @@ def is_image(filepath):
   return False
 
 def blocked_by_input(func):
-  "Block a function from being called if self._input has focus"
+  """Block a function from being called if self._input has focus"""
   @functools.wraps(func)
   def wrapper(self, *args, **kwargs):
     # pylint: disable=protected-access
@@ -258,55 +258,55 @@ class ImageManager:
     self._functions = {}
 
   def add_output_file(self, path):
-    "Write mark actions to the given path"
+    """Write mark actions to the given path"""
     self._output.append(path)
 
   def char_width(self):
-    "Return the width of one 'M' character in the current font"
+    """Return the width of one 'M' character in the current font"""
     return self._font.measure('M')
 
   def line_height(self):
-    "Return the current font's line height"
+    """Return the current font's line height"""
     return self._font.metrics()["linespace"]
 
   @property
   def root(self):
-    "Return the root Tk() object"
+    """Return the root Tk() object"""
     return self._root
 
   def add_mark_function(self, cbfunc, key):
-    "Add callback function for when mark key (1..9) is pressed"
+    """Add callback function for when mark key (1..9) is pressed"""
     self._functions[key] = cbfunc
 
   def add_text_function(self, func):
-    "Call func(path) and display the result on the image"
+    """Call func(path) and display the result on the image"""
     self._text_functions.append(func)
 
   def actions(self):
-    "Return the current actions"
+    """Return the current actions"""
     return self._actions
 
   def canvas_size(self):
-    "Get (canvas_width, canvas_height)"
+    """Get (canvas_width, canvas_height)"""
     return self._canvas["width"], self._canvas["height"]
 
   def set_canvas_size(self, new_size):
-    "Set (canvas_width, canvas_height)"
+    """Set (canvas_width, canvas_height)"""
     width, height = new_size
     self._canvas["width"] = width
     self._canvas["height"] = height
 
   def path(self):
-    "Return the path to the current image"
+    """Return the path to the current image"""
     return self._images[self._index]
 
   def _resize_input(self, s):
-    "Ensure the input is wide enough to display the string s"
+    """Ensure the input is wide enough to display the string s"""
     max_chrs = int(round(self._width / self.char_width()))
     self._input["width"] = min(max(len(s)+2, INPUT_START_WIDTH), max_chrs)
 
   def _get_image(self, path):
-    "Load (and optionally resize) image specified by path"
+    """Load (and optionally resize) image specified by path"""
     try:
       image = Image.open(path)
     except IOError as e:
@@ -349,7 +349,7 @@ class ImageManager:
     for the items created. The last ID is always the foreground text.
     """
     def draw_string(textx, texty, fill):
-      "Helper function: actually draw the text"
+      """Helper function: actually draw the text"""
       return self._canvas.create_text(textx+shiftx, texty+shifty,
           fill=fill,
           anchor=anchor,
@@ -370,7 +370,7 @@ class ImageManager:
     return ids
 
   def _draw_current(self):
-    "Draw self._image to self._canvas"
+    """Draw self._image to self._canvas"""
     path = self._images[self._index]
     # NOTE: We store the PhotoImage in a self attribute because create_image()
     # does not properly take ownership of the reference and the PhotoImage
@@ -411,7 +411,7 @@ class ImageManager:
       self._draw_text("\n".join(l for l in text_lines))
 
   def set_index(self, index):
-    "Sets the index and displays the image at that index"
+    """Sets the index and displays the image at that index"""
     self._index = index
     path = self._images[index]
     logger.debug("Displaying image %s of %s %r", index+1, self._count, path)
@@ -426,11 +426,11 @@ class ImageManager:
     self.root.title(new_title)
 
   def redraw(self):
-    "Recomputes and redraws the current image"
+    """Recomputes and redraws the current image"""
     self.set_index(self._index)
 
   def _action(self, *args):
-    "action(path, action) or action(action): add an action"
+    """action(path, action) or action(action): add an action"""
     if len(args) == 1:
       path = self.path()
       action = args[0]
@@ -446,7 +446,7 @@ class ImageManager:
         fobj.write("{!r} {!r}\n".format(path, " ".join(action)))
 
   def _input_set_text(self, text, select=True):
-    "Set the input box's text, optionally selecting the content"
+    """Set the input box's text, optionally selecting the content"""
     self._input.delete(0, len(self._input.get()))
     self._input.insert(0, text)
     self._resize_input(text)
@@ -455,7 +455,7 @@ class ImageManager:
       self._input.select_range(0, len(text))
 
   def _do_find_image(self, prefix):
-    "Return the path to the next image starting with prefix, if found"
+    """Return the path to the next image starting with prefix, if found"""
     for image_path in iterate_from(self._images, self._index):
       name = os.path.basename(image_path)
       if name.startswith(prefix):
@@ -463,7 +463,7 @@ class ImageManager:
     return None
 
   def _handle_command(self, command):
-    "Handle a command entered via the input box"
+    """Handle a command entered via the input box"""
     cmd_and_args = command.split(None, 1)
     cmd, args = command, ""
     if len(cmd_and_args) == 2:
@@ -487,7 +487,7 @@ class ImageManager:
   # Tkinter callback and manual call
   @blocked_by_input
   def _prev_image(self, event):
-    "Navigate to the previous image"
+    """Navigate to the previous image"""
     index = self._index - 1
     if index < 0:
       index = len(self._images) - 1
@@ -496,7 +496,7 @@ class ImageManager:
   # Tkinter callback and manual call
   @blocked_by_input
   def _next_image(self, event):
-    "Navigate to the next image"
+    """Navigate to the next image"""
     index = self._index + 1
     if index >= len(self._images):
       logger.debug("Reached end of image list")
@@ -506,47 +506,47 @@ class ImageManager:
   # Tkinter callback
   @blocked_by_input
   def _next_many(self, event):
-    "Navigate to the 10th next image"
+    """Navigate to the 10th next image"""
     self.set_index((self._index + 10) % len(self._images))
 
   # Tkinter callback
   @blocked_by_input
   def _prev_many(self, event):
-    "Navigate to the 10th previous image"
+    """Navigate to the 10th previous image"""
     self.set_index((self._index - 10) % len(self._images))
 
   # Tkinter callback
   @blocked_by_input
   def _rename_image(self, event):
-    "Rename the current image"
+    """Rename the current image"""
     self._input_mode = MODE_RENAME
     self._input_set_text(os.path.basename(self.path()), select=True)
 
   # Tkinter callback
   @blocked_by_input
   def _delete_image(self, event):
-    "Delete the current image"
+    """Delete the current image"""
     self._action(("DELETE",))
     self._next_image(event)
 
   # Tkinter callback
   @blocked_by_input
   def _go_to_image(self, event):
-    "Navigate to the image with the given number"
+    """Navigate to the image with the given number"""
     self._input_mode = MODE_SET_IMAGE
     self._input_set_text(self._last_input, select=True)
 
   # Tkinter callback
   @blocked_by_input
   def _find_image(self, event):
-    "Show the first image filename starting with a given prefix"
+    """Show the first image filename starting with a given prefix"""
     self._input_mode = MODE_GOTO
     self._input_set_text(self._last_input, select=True)
 
   # Tkinter callback
   @blocked_by_input
   def _mark_image(self, event):
-    "Mark an image for later examination"
+    """Mark an image for later examination"""
     if event.char in self._functions:
       self._functions[event.char](self.path())
     self._action((f"MARK-{event.char}",))
@@ -554,18 +554,18 @@ class ImageManager:
   # Tkinter callback
   @blocked_by_input
   def _enter_command(self, event):
-    "Let the user enter an arbitrary command"
+    """Let the user enter an arbitrary command"""
     self._input_mode = MODE_COMMAND
     self._input_set_text("Command?", select=True)
 
   # Tkinter callback
   @blocked_by_input
   def _show_help(self, event):
-    "Display help text to the user"
+    """Display help text to the user"""
     sys.stderr.write(HELP_KEY_ACTIONS)
     help_text = HELP_KEY_ACTIONS
     help_text += "\nPress any key to clear. Text will clear automatically" \
-        " after 10 seconds"
+        """ after 10 seconds"""
     ids = self._draw_text(help_text, (self._width/2, 0), anchor=tk.N)
     def clear_item_func(*_):
       for itemid in ids:
@@ -575,7 +575,7 @@ class ImageManager:
   # Tkinter callback
   @blocked_by_input
   def _adjust(self, event):
-    "Fine-tune image size (for testing)"
+    """Fine-tune image size (for testing)"""
     if event.char == 'z':
       self._height -= 1
     elif event.char == 'c':
@@ -586,14 +586,14 @@ class ImageManager:
   # Tkinter callback
   @blocked_by_input
   def _toggle_text(self, event):
-    "Toggle base text display"
+    """Toggle base text display"""
     self._enable_text = not self._enable_text
     self.redraw()
 
   # Tkinter callback
   @blocked_by_input
   def _toggle_zoom(self, event):
-    "Advance the zoom method and redraw the image"
+    """Advance the zoom method and redraw the image"""
     if self._scale_mode == SCALE_NONE:
       self._scale_mode = SCALE_SHRINK
     elif self._scale_mode == SCALE_SHRINK:
@@ -606,7 +606,7 @@ class ImageManager:
 
   # Tkinter callback
   def _update_window(self, event):
-    "Called when the root window receives a Configure event"
+    """Called when the root window receives a Configure event"""
     logger.debug(f"_update_window on {event.widget!r}: {event}")
     if event.widget == self._root:
       logger.debug(f"event: {dir(event)}")
@@ -616,7 +616,7 @@ class ImageManager:
 
   # Tkinter callback
   def _input_enter(self, *args):
-    "Called when user presses Enter/Return on the Entry"
+    """Called when user presses Enter/Return on the Entry"""
     logger.debug(f"_input_enter: {args}")
     value = self._input.get()
     self._input.delete(0, len(value))
@@ -655,7 +655,7 @@ class ImageManager:
 
   # Tkinter callback
   def escape(self, event):
-    "Either cancel rename or exit the application"
+    """Either cancel rename or exit the application"""
     if self._root.focus_get() == self._input:
       self._input_mode = MODE_NONE
       self._input.delete(0, len(self._input.get()))
@@ -665,11 +665,11 @@ class ImageManager:
 
   # Tkinter callback
   def close(self, event):
-    "Exit the application"
+    """Exit the application"""
     self.root.quit()
 
 def get_images(*paths, recursive=False):
-  "Return a list of all images found in the given paths"
+  """Return a list of all images found in the given paths"""
   def list_path(path):
     if os.path.isfile(path):
       yield path
@@ -705,11 +705,11 @@ def get_images(*paths, recursive=False):
   return images
 
 def build_mark_write_function(path):
-  "Create a mark function to write an image to `path`"
+  """Create a mark function to write an image to `path`"""
   mode = "a+t" if os.path.isfile(path) else "wt"
   logger.debug("Building mark function for %r mode %s", path, mode)
   def mark_func(image_path):
-    "Mark function: write image path to the path given"
+    """Mark function: write image path to the path given"""
     with open(path, mode) as fobj:
       fobj.write(image_path)
       fobj.write(os.linesep)
@@ -717,14 +717,14 @@ def build_mark_write_function(path):
   return mark_func
 
 def build_text_function(program_string):
-  "Build a text function from a given program string"
+  """Build a text function from a given program string"""
   pipe = False
   prog = program_string
   if prog.startswith("|"):
     pipe = True
     prog = prog[1:]
   def text_func(path):
-    "Execute a program and return the output"
+    """Execute a program and return the output"""
     args = shlex.split(prog)
     p_stdin = None
     p_input = None
@@ -745,7 +745,7 @@ def build_text_function(program_string):
   return text_func
 
 def _print_help(argparser, args):
-  "Print help text"
+  """Print help text"""
 
   if args.help or args.help_all:
     argparser.print_help()
@@ -786,7 +786,7 @@ will copy the marked files to the /home/user directory on example.com.
     sys.stderr.write(HELP_KEY_ACTIONS)
 
 def main():
-  "Entry point"
+  """Entry point"""
   ap = argparse.ArgumentParser(usage="%(prog)s [arguments] [images ...]",
       add_help=False)
   ag = ap.add_argument_group("image selection")
@@ -816,6 +816,8 @@ def main():
   ag = ap.add_argument_group("output control")
   ag.add_argument("-o", "--out", metavar="PATH",
       help="write actions to stdout and %(metavar)s")
+  ag.add_argument("-t", "--text", action="store_true",
+      help="output text instead of CSV")
 
   ag = ap.add_argument_group("MARK actions")
   ag.add_argument("--write1", metavar="PATH",
@@ -946,14 +948,20 @@ def main():
   # Don't run the main loop if we're interactive
   if not sys.flags.interactive:
     manager.root.mainloop()
-    writer = csv.writer(sys.stdout)
-    for path, actions in manager.actions().items():
-      for action in actions:
-        row = []
-        row.append(action[0])
-        row.append(path)
-        row.extend(action[1:])
-        writer.writerow(row)
+    path_actions = list(manager.actions().items())
+    if args.text:
+      for path, actions in path_actions:
+        for action in actions:
+          print(" ".join((action[0], path, *action[1:])))
+    else:
+      writer = csv.writer(sys.stdout)
+      for path, actions in path_actions:
+        for action in actions:
+          row = []
+          row.append(action[0])
+          row.append(path)
+          row.extend(action[1:])
+          writer.writerow(row)
 
 if __name__ == "__main__":
   main()
