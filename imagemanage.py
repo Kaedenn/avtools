@@ -8,6 +8,8 @@ rename anything.
 """
 
 # TODO:
+# Move body of self._handle_command into self._do_input_command
+# Hide input box when not in use
 # Display some kind of feedback for when the image is resized
 # Support the following image types:
 #   XPM
@@ -98,7 +100,7 @@ Key actions:
   <Ctrl-w>    Exit the application
   <Ctrl-q>    Exit the application
   <Escape>    Cancel input or exit the application
-  <t>         Toggle displaying standard image text
+  <t>         Toggle displaying text
   <z>, <c>    Adjust canvas size slightly (debugging)
   <l>         "Label" an image, used to take "notes" when viewing images
   <h>         Display this message
@@ -169,6 +171,51 @@ def open_image(filepath):
     logger.error("Failed opening image %r: %s", filepath, e)
   return None
 
+def _parse_format_token(token):
+  """
+  Parse a single key-value token
+  """
+  tkey, tval = None, None
+  if token in ("bold", "normal"):
+    tkey, tval = "bold", (token == "bold")
+  elif token == "italic":
+    tkey, tval = "italic", True
+  elif "=" in token:
+    fkey, fval = token.split("=", 1)
+    if fkey in ("bold", "italic"):
+      tkey = fkey
+      tval = fval.lower() in ("1", "true", "t")
+    elif fkey == "size" and fval.isdigit():
+      tkey, tval = fkey, int(fval)
+    elif fkey in "family":
+      tkey, tval = fkey, fval
+    elif fkey in ("color", "fgcolor"):
+      tkey, tval = "fgcolor", fval
+    elif fkey == "bgcolor":
+      tkey, tval = fkey, fval
+
+  if tkey is None:
+    logger.warning("Failed to parse token %r", token)
+
+  return tkey, tval
+
+def extract_formatting(text):
+  """
+  Extract embedded formatting information, if exists
+  """
+  fields = {}
+  remainder = text
+  if text.startswith("[[") and "]]" in text:
+    spos = text.index("[[")+2 # for possible future part-of-line formatting
+    epos = text.index("]]")
+    tokens = text[spos:epos].replace(", ", ",").split(",")
+    remainder = text[epos+2:]
+    for token in tokens:
+      tkey, tval = _parse_format_token(token)
+      if tkey is not None:
+        fields[tkey] = tval
+  return fields, remainder
+
 def blocked_by_input(func):
   """Block a function from being called if self._input has focus"""
   @functools.wraps(func)
@@ -224,6 +271,7 @@ class ImageManager:
     root.bind_all("<Key-D>", self._delete_image)
     root.bind_all("<Key-F>", self._find_image)
     root.bind_all("<Key-G>", self._go_to_image)
+    root.bind_all("<Key-colon>", self._go_to_image)
     root.bind_all("<Key-h>", self._show_help)
     root.bind_all("<Key-z>", self._adjust)
     root.bind_all("<Key-c>", self._adjust)
@@ -252,18 +300,10 @@ class ImageManager:
     self._font_family = font_family
     self._font_size = font_size
 
-    # Normal font object
     self._font = tkfont.Font(
         family=self._font_family,
         size=self._font_size)
-    # Bold font object
-    self._font_bold = tkfont.Font(
-        weight=tkfont.BOLD,
-        family=self._font_family,
-        size=self._font_size)
-
-    self._input_width = input_width
-    self._input_height = self.line_height() + 2*PADDING
+    self._font_cache = {}
 
     # Create root window
     frame = tk.Frame(root)
@@ -277,14 +317,21 @@ class ImageManager:
     # Create primary canvas for displaying the images
     self._canvas = tk.Canvas(frame)
     self._canvas.grid(row=0, column=0)
+    self._gutter.lower(self._canvas)
 
     # IDs of temporary objects to remove as soon as the user requests
     self._canvas_temp = []
 
-    # Create primary input box
+    # IDs of text elements drawn on top of the image
+    self._text_ids = []
+
+    # Create primary input box (which starts hidden)
+    self._input_width = input_width
+    self._input_height = self.line_height() + 2*PADDING
     self._input = tk.Entry(frame, font=self._font, width=self._input_width)
     self._input.grid(row=0, column=0, sticky=tk.NW)
     self._input.bind("<Key-Return>", self._input_enter)
+    self._input.lower(self._canvas)
 
     # Configuration after widget construction
     self._input_mode = MODE_NONE
@@ -300,7 +347,7 @@ class ImageManager:
     self._actions = collections.defaultdict(list)
     self._functions = {}
 
-  def add_output_file(self, path, lformat="{!r} {!r}\n"):
+  def add_output_file(self, path, lformat="{} {}\n"):
     """Write mark actions to the given path"""
     self._output.append({
       "path": path,
@@ -350,6 +397,18 @@ class ImageManager:
     """Return the path to the current image"""
     return self._images[self._index]
 
+  def hide_input(self): # TODO: move text up
+    """Hide the input box"""
+    self._input.lower(self._canvas)
+    #self._input_height = 0
+    #self._draw_current()
+
+  def show_input(self): # TODO: move text down
+    """Hide the input box"""
+    self._input.lift(self._canvas)
+    #self._input_height = self.line_height() + 2*PADDING
+    #self._draw_current()
+
   def _resize_input(self, s):
     """Ensure the input is wide enough to display the string s"""
     min_chrs = max(len(s), INPUT_START_WIDTH)
@@ -378,7 +437,30 @@ class ImageManager:
       return image.resize((neww, newh))
     return image
 
-  def _draw_text(self,
+  def _get_font(self,
+      bold=True,        # Use bold weight over normal
+      italic=False,     # Use italic slant over roman
+      size=None,        # Use custom size (None -> self._font_size)
+      family=None):     # Use custom font face (None -> self._font_family)
+    """Obtain a font object and cache it for future use"""
+    font = self._font
+    if bold or italic or size or family:
+      cache_key = (bold, italic, size, family)
+      if cache_key not in self._font_cache:
+        ffamily = self._font_family if family is None else family
+        fsize = self._font_size if size is None else size
+        font = tkfont.Font(
+            weight=tkfont.BOLD if bold else tkfont.NORMAL,
+            slant=tkfont.ITALIC if italic else tkfont.ROMAN,
+            family=ffamily,
+            size=fsize)
+        self._font_cache[cache_key] = font
+        logger.debug("Cached font %r as %r", font.actual(), cache_key)
+      else:
+        font = self._font_cache[cache_key]
+    return font
+
+  def _draw_line(self,
       text,
       pos=(0, 0),       # Where do we put the text?
       anchor=tk.NW,     # How is the text anchored to its position?
@@ -387,21 +469,26 @@ class ImageManager:
       border=1,         # Shadow size (distance between fg and bg)
       shiftx=2,         # Nudge text by this amount horizontally
       shifty=2,         # Nudge text by this amount vertically
-      bold=True):
+      bold=True,        # Use bold weight over normal
+      italic=False,     # Use italic slant over roman
+      size=None,        # Use custom size (None -> self._font_size)
+      family=None):     # Use custom font face (None -> self._font_family)
     """
     Draw text on the canvas with the given parameters. Returns the Tkinter IDs
     for the items created. The last ID is always the foreground text.
     """
+    # Determine the final font object
+    font = self._get_font(bold=bold, italic=italic, size=size, family=family)
+
     def draw_string(textx, texty, fill):
       """Helper function: actually draw the text"""
       return self._canvas.create_text(textx+shiftx, texty+shifty,
           fill=fill,
           anchor=anchor,
           text=text,
-          font=self._font_bold if bold else self._font)
-    posx, posy = pos
-    # FIXME: Calling code should compensate for the input box size
-    posy += self._input_height # Don't cover the input box
+          font=font)
+    posx = pos[0]
+    posy = pos[1] + self._input_height # Don't cover the input box
     bg_points = (
       (posx-border, posy-border),
       (posx-border, posy+border),
@@ -411,6 +498,26 @@ class ImageManager:
     for bgx, bgy in bg_points:
       ids.append(draw_string(bgx, bgy, bgcolor))
     ids.append(draw_string(posx, posy, fgcolor))
+    return ids
+
+  def _draw_text_lines(self, lines,
+      pos=(0, 0),
+      bold=True,
+      italic=False,
+      size=None,
+      family=None,
+      **kwargs):
+    """Draw several lines of text"""
+    font = self._get_font(bold=bold, italic=italic, size=size, family=family)
+    lspace = font.metrics("linespace")
+    ids = []
+    for lnr, line in enumerate(lines):
+      linex = pos[0]
+      liney = pos[1] + lspace * lnr
+      fkwds = dict(kwargs)
+      line_kwds, line_text = extract_formatting(line)
+      fkwds.update(line_kwds)
+      ids.extend(self._draw_line(line_text, pos=(linex, liney), **fkwds))
     return ids
 
   def _draw_current(self):
@@ -441,18 +548,16 @@ class ImageManager:
         f"Size: {size}; {imgw}x{imgh}px",
         f"Time: {tstamp}"))
 
-    # Call the text functions to add whatever they want
-    for func in self._text_functions:
-      logger.debug("Text function %r for %s", func, path)
-      text = func(path)
-      # Ensure text is actually a string (and not a bytes type)
-      if not isinstance(text, str) and hasattr(text, "decode"):
-        text = text.decode()
-      text_lines.extend(text.splitlines())
+      # Call the text functions to add whatever they want
+      for func in self._text_functions:
+        text = func(path)
+        # Ensure text is actually a string (and not a bytes type)
+        if not isinstance(text, str) and hasattr(text, "decode"):
+          text = text.decode()
+        text_lines.extend(text.splitlines())
 
     if text_lines:
-      logger.debug("Drawing %d lines of text: %r", len(text_lines), text_lines)
-      self._draw_text("\n".join(l for l in text_lines))
+      self._text_ids = self._draw_text_lines(text_lines)
 
   def set_index(self, index):
     """Sets the index and displays the image at that index"""
@@ -493,6 +598,7 @@ class ImageManager:
 
   def _input_set_text(self, text, select=True):
     """Set the input box's text, optionally selecting the content"""
+    self.show_input()
     self._input.delete(0, len(self._input.get()))
     self._input.insert(0, text)
     self._resize_input(text)
@@ -525,10 +631,15 @@ class ImageManager:
         logger.info("Image size: %s", self._image.size)
       else:
         logger.info("No image displayed")
+    elif cmd == "GOTO":
+      if args.isdigit() and 1 <= int(args) <= self._count:
+        self.set_index(int(args))
+      else:
+        self._input_set_text(f"Invalid index {args}", select=False)
     elif cmd in ("h", "help"):
       self._show_help(None)
     else:
-      self._input_set_text("Invalid command {command!r}", select=False)
+      self._input_set_text(f"Invalid command {command!r}", select=False)
 
   def _on_keypress(self, event):
     """Called when any key is pressed"""
@@ -633,7 +744,7 @@ class ImageManager:
     help_text = HELP_KEY_ACTIONS
     help_text += "\nPress any key to clear. Text will clear automatically" \
         " after 10 seconds"
-    ids = self._draw_text(help_text, (self._width/2, 0), anchor=tk.N)
+    ids = self._draw_line(help_text, (self._width/2, 0), anchor=tk.N)
     self._canvas_temp.extend(ids)
     self._root.after(10000, lambda *_: self._canvas_clear_temp())
 
@@ -700,7 +811,7 @@ class ImageManager:
       logger.info("Navigating to image number %d", idx)
       self.set_index(idx)
     except ValueError as e:
-      self._input_set_text(f"Error: {e}")
+      self._input_set_text(f"Error: {e}", select=False)
 
   def _do_input_label(self, value):
     """Handle the label input"""
@@ -736,8 +847,13 @@ class ImageManager:
     elif self._input_mode == MODE_COMMAND:
       # Execute an arbitrary command
       self._do_input_command(value)
+    elif self._input_mode == MODE_NONE:
+      logger.warning("Received input %r args %r without mode",
+          value, args)
     else:
-      logger.error("Internal error: invalid mode %s", self._input_mode)
+      logger.error("Internal error: invalid mode %s; value=%r args=%r",
+          self._input_mode, value, args)
+    self.hide_input()
     self._input_mode = MODE_NONE
 
   # Tkinter callback
@@ -876,6 +992,20 @@ def _print_help(argparser, args):
   If <PROG> starts with a pipe "|", then <image-path> is written to <PROG> and
   the output is displayed. Anything <PROG> writes to stderr is displayed
   directly to the terminal. Be careful with quoting!
+
+  Per-line formatting is supported with simple syntax:
+    [[formatting]]text
+  where "formatting" is one or more of the following, separated by both a comma
+  and a space (", "):
+    `bold` or `bold={1,t,true}`     use bold font weight (the default)
+    `normal` or `bold={0,f,false}`  use normal font weight
+    `italic` or `italic={1,t,true}` make text italic
+    `size=NUM`
+    `family=STR`
+    `color=COLOR` or `fgcolor=COLOR`
+    `bgcolor=COLOR`
+  For example,
+    [[normal, color=red, italic]]This text is red, italic, and not bold
   """))
 
   if args.help_write or args.help_all:
@@ -1052,7 +1182,7 @@ def main():
       if not args.append:
         logger.warning("%r: file exists; deleting", args.out)
         os.truncate(args.out, 0)
-    manager.add_output_file(args.out)
+    manager.add_output_file(args.out) # TODO: allow configuring line format
 
   # Register functions to call when a mark key is pressed
   if args.write1:
