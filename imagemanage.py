@@ -1039,7 +1039,7 @@ def main():
       help="files (or directories) to examine")
   ag.add_argument("-R", "--recurse", action="store_true",
       help="descend into directories recursively to find images")
-  ag.add_argument("-F", "--files", metavar="PATH",
+  ag.add_argument("-F", "--files", metavar="PATH", action="append",
       help="read images from %(metavar)s")
   ag.add_argument("--skip-precheck", action="store_true",
       help="skip preloading images (useful for large image sets)")
@@ -1122,9 +1122,10 @@ def main():
 
   images_args = []
   if args.files:
-    with open(args.files, "rt") as fobj:
-      for line in fobj:
-        images_args.append(line.rstrip())
+    for file_path in args.files:
+      with open(file_path, "rt") as fobj:
+        for line in fobj:
+          images_args.append(line.rstrip())
 
   if args.images:
     images_args.extend(args.images)
