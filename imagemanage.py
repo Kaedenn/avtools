@@ -3,14 +3,22 @@
 """
 Display and manage a bunch of images.
 
-Actions are printed when the program ends; program does not actually delete or
-rename anything.
+This script essentially provides utilities for the following actions:
+  Labelling an image
+  "Marking" an image (for arbitrary actions, for tracking, etc)
+  Moving (renaming) an image file
+  Deleting an image
+
+Note that this script does not modify the image files in any way; it neither
+renames nor deletes files. Instead, the actions are printed with this script
+terminates so that the user can decide how to proceed.
+
+A user can certainly create a mark action to do such a thing, however.
 """
 
 # TODO:
+# Allow zoom adjustments (_ and +) to affect other scale modes
 # Move body of self._handle_command into self._do_input_command
-# Hide input box when not in use
-# Display some kind of feedback for when the image is resized
 # Support the following image types:
 #   XPM
 #     PIL.XpmImageFile breaks on images using more than 1 bit per pixel
@@ -22,6 +30,7 @@ rename anything.
 #   Calculate the sizes of the other grid cells?
 #   Calculate the positions of the other grid cells and subtract?
 # Zenity support where desirable
+# README!!!
 
 import argparse
 import collections
@@ -32,6 +41,7 @@ import io
 import logging
 import mimetypes
 import os
+import random
 import shlex
 import subprocess
 from subprocess import Popen, PIPE
@@ -56,6 +66,7 @@ FONT = "monospace"
 FONT_SIZE = 10
 
 SORT_NONE = "none" # unordered
+SORT_RAND = "rand" # randomized
 SORT_NAME = "name" # ascending
 SORT_TIME = "time" # oldest first
 SORT_SIZE = "size" # smallest first
@@ -63,7 +74,7 @@ SORT_RNAME = "r" + SORT_NAME # descending
 SORT_RTIME = "r" + SORT_TIME # newest first
 SORT_RSIZE = "r" + SORT_SIZE # largest first
 SORT_MODES = (
-  SORT_NONE,
+  SORT_NONE, SORT_RAND,
   SORT_NAME, SORT_RNAME,
   SORT_TIME, SORT_RTIME,
   SORT_SIZE, SORT_RSIZE)
@@ -78,6 +89,8 @@ MODE_GOTO = "goto"
 MODE_SET_IMAGE = "set-image"
 MODE_LABEL = "label"
 MODE_COMMAND = "command"
+
+LINE_FORMAT = "{} {}\n"
 
 INPUT_START_WIDTH = 20
 SCREEN_WIDTH_ADJUST = 0
@@ -104,6 +117,8 @@ Key actions:
   <z>, <c>    Adjust canvas size slightly (debugging)
   <l>         "Label" an image, used to take "notes" when viewing images
   <h>         Display this message
+  <_>         (<Shift-hyphen>) when zoom mode is none, decrease size by 10%
+  <+>         (<Shift-equal>) when zoom mode is none, increase size by 10%
 """
 
 def get_asset_path(name):
@@ -112,7 +127,7 @@ def get_asset_path(name):
   return os.path.join(self_path, ASSET_PATH, name)
 
 def format_size(nbytes, places=2):
-  """Format a number of bytes"""
+  """Format a number of bytes into '<number> <scale>' string"""
   bases = ["B", "KB", "MB", "GB", "TB", "PB"]
   base = 0
   curr = nbytes
@@ -129,8 +144,8 @@ def format_timestamp(tstamp, formatspec):
   """Format a numeric timestamp"""
   return datetime.datetime.fromtimestamp(tstamp).strftime(formatspec)
 
-def iterate_from(item_list, start_index):
-  """Iterate over an entire list, cyclically, starting at the given index + 1"""
+def iterate_from(item_list, start_index): # FIXME: remove + 1
+  """Iterate once over thelist, cyclically, starting at the given index + 1"""
   curr = start_index + 1
   while curr < len(item_list):
     yield item_list[curr]
@@ -173,7 +188,18 @@ def open_image(filepath):
 
 def _parse_format_token(token):
   """
-  Parse a single key-value token
+  Parse a single keyi or key-value formatting token. Valid tokens are:
+    bold, bold=<boolean>      make text bold
+    normal, normal=<boolean>  make text normal (un-blold)
+    italic, italic=<boolean>  make text italic
+    size=<number>             font size in points
+    family=<string>           font family
+    fgcolor=<color>           text foreground color
+    bgcolor=<color>           text background color
+  Boolean values have the following behavior:
+    True if value is one of "1", "true", or "t"
+    False otherwise
+  Colors are parsed by Tkinter.
   """
   tkey, tval = None, None
   if token in ("bold", "normal"):
@@ -200,13 +226,11 @@ def _parse_format_token(token):
   return tkey, tval
 
 def extract_formatting(text):
-  """
-  Extract embedded formatting information, if exists
-  """
+  """Extract embedded formatting information, if the text contains any"""
   fields = {}
   remainder = text
   if text.startswith("[[") and "]]" in text:
-    spos = text.index("[[")+2 # for possible future part-of-line formatting
+    spos = text.index("[[")+2 # for possible part-of-line formatting
     epos = text.index("]]")
     tokens = text[spos:epos].replace(", ", ",").split(",")
     remainder = text[epos+2:]
@@ -217,7 +241,7 @@ def extract_formatting(text):
   return fields, remainder
 
 def blocked_by_input(func):
-  """Block a function from being called if self._input has focus"""
+  """Restrict a function from being called if self._input has focus"""
   @functools.wraps(func)
   def wrapper(self, *args, **kwargs):
     # pylint: disable=protected-access
@@ -254,10 +278,9 @@ class ImageManager:
       icon=None):
     self._output = []
     self._root = root = tk.Tk()
-    root.title("Image Manager") # Default; overwritten shortly
+    root.title("Image Manager") # Default; overwritten shortly with image info
     if icon:
-      icon_image = Image.open(icon)
-      root.iconphoto(False, ImageTk.PhotoImage(icon_image))
+      root.iconphoto(False, ImageTk.PhotoImage(Image.open(icon)))
 
     # Bind to all relevant top-level events
     root.bind_all("<Key-Escape>", self.escape)
@@ -279,6 +302,8 @@ class ImageManager:
     root.bind_all("<Key-l>", self._label)
     root.bind_all("<Key-equal>", self._toggle_zoom)
     root.bind_all("<Key-slash>", self._enter_command)
+    root.bind_all("<Key-underscore>", self._zoom_out)
+    root.bind_all("<Key-plus>", self._zoom_in)
     root.bind_all("<Key>", self._on_keypress)
     root.bind("<Configure>", self._update_window)
     for i in range(1, 10):
@@ -296,13 +321,11 @@ class ImageManager:
     self._enable_text = show_text
     self._text_functions = []
     self._scale_mode = SCALE_SHRINK
+    self._scale_amount = 0 # percentage, >0 to zoom <0 to shrink
 
+    self._font = tkfont.Font(family=font_family, size=font_size)
     self._font_family = font_family
     self._font_size = font_size
-
-    self._font = tkfont.Font(
-        family=self._font_family,
-        size=self._font_size)
     self._font_cache = {}
 
     # Create root window
@@ -327,7 +350,7 @@ class ImageManager:
 
     # Create primary input box (which starts hidden)
     self._input_width = input_width
-    self._input_height = self.line_height() + 2*PADDING
+    self._input_height = self.line_height() + 2 * PADDING
     self._input = tk.Entry(frame, font=self._font, width=self._input_width)
     self._input.grid(row=0, column=0, sticky=tk.NW)
     self._input.bind("<Key-Return>", self._input_enter)
@@ -347,13 +370,6 @@ class ImageManager:
     self._actions = collections.defaultdict(list)
     self._functions = {}
 
-  def add_output_file(self, path, lformat="{} {}\n"):
-    """Write mark actions to the given path"""
-    self._output.append({
-      "path": path,
-      "line_format": lformat
-    })
-
   def char_width(self):
     """Return the width of one 'M' character in the current font"""
     return self._font.measure('M')
@@ -366,6 +382,10 @@ class ImageManager:
   def root(self):
     """Return the root Tk() object"""
     return self._root
+
+  def add_output_file(self, path, lformat=LINE_FORMAT):
+    """Write mark actions to the given path"""
+    self._output.append({"path": path, "line_format": lformat})
 
   def add_mark_function(self, cbfunc, key):
     """Add callback function for when mark key (1..9) is pressed"""
@@ -421,20 +441,30 @@ class ImageManager:
     if image is None:
       logger.error("Failed to load image")
       return None
-    # Determine if we should resize the image
-    cnvw, cnvh = self._width, self._height
-    imgw, imgh = image.size
+
+    # Scale the image immediately
+    target_w, target_h = self._width, self._height
+    image_w, image_h = image.size
     want_scale = False
-    if self._scale_mode == SCALE_EXACT and (imgw != cnvw or imgh != cnvh):
+    if self._scale_mode == SCALE_EXACT:
+      if (image_w, image_h) != (target_w, target_h):
+        want_scale = True
+    elif self._scale_mode == SCALE_SHRINK:
+      if image_w > target_w or image_h > target_h:
+        want_scale = True
+    elif self._scale_mode == SCALE_NONE and self._scale_amount != 0:
+      target_w, target_h = image_w, image_h
+      target_w += target_w * self._scale_amount / 100
+      target_h += target_h * self._scale_amount / 100
       want_scale = True
-    elif self._scale_mode == SCALE_SHRINK and (imgw > cnvw or imgh > cnvh):
-      want_scale = True
+
     if want_scale:
-      scale = max(imgw/cnvw, imgh/cnvh)
-      neww, newh = int(imgw/scale), int(imgh/scale)
+      scale = max(image_w/target_w, image_h/target_h)
+      new_w, new_h = int(image_w/scale), int(image_h/scale)
       logger.debug("Scale %r [%d,%d] by %f to [%d,%d] (to fit %d %d)",
-          path, imgw, imgh, scale, neww, newh, cnvw, cnvh)
-      return image.resize((neww, newh))
+          path, image_w, image_h, scale, new_w, new_h, target_w, target_h)
+      image = image.resize((new_w, new_h))
+
     return image
 
   def _get_font(self,
@@ -527,8 +557,7 @@ class ImageManager:
     # does not properly take ownership of the reference and the PhotoImage
     # object ends up being deallocated almost immediately.
     self._photo = ImageTk.PhotoImage(self._image)
-    # Clear the canvas
-    self._canvas.delete(tk.ALL)
+    self._canvas.delete(tk.ALL) # Clear the canvas
     # Display the image, centered
     self._canvas.create_image(
         self._width/2,
@@ -540,7 +569,7 @@ class ImageManager:
     if self._enable_text:
       # Add standard text for path, size, and filetime
       imgw, imgh = self._image.size
-      stat = os.lstat(path)
+      stat = os.stat(path)
       tstamp = format_timestamp(stat.st_mtime, "%Y/%m/%d %H:%M:%S")
       size = format_size(stat.st_size)
       text_lines.extend((
@@ -631,11 +660,6 @@ class ImageManager:
         logger.info("Image size: %s", self._image.size)
       else:
         logger.info("No image displayed")
-    elif cmd == "GOTO":
-      if args.isdigit() and 1 <= int(args) <= self._count:
-        self.set_index(int(args))
-      else:
-        self._input_set_text(f"Invalid index {args}", select=False)
     elif cmd in ("h", "help"):
       self._show_help(None)
     else:
@@ -644,7 +668,7 @@ class ImageManager:
   def _on_keypress(self, event):
     """Called when any key is pressed"""
     logger.debug("received keypress %r", event)
-    if event.keysym in self._keybinds and self._keybinds[event.keysym]:
+    if self._keybinds.get(event.keysym):
       format_keys = dict(
         file=self.path(),
         index=self._index,
@@ -668,21 +692,14 @@ class ImageManager:
     self._canvas_temp = []
 
   @blocked_by_input # Tkinter callback and manual call
-  def _prev_image(self, event):
-    """Navigate to the previous image"""
-    index = self._index - 1
-    if index < 0:
-      index = self._count - 1
-    self.set_index(index)
-
-  @blocked_by_input # Tkinter callback and manual call
   def _next_image(self, event):
     """Navigate to the next image"""
-    index = self._index + 1
-    if index >= self._count:
-      logger.debug("Reached end of image list")
-      index = 0
-    self.set_index(index)
+    self.set_index((self._index + 1) % self._count)
+
+  @blocked_by_input # Tkinter callback and manual call
+  def _prev_image(self, event):
+    """Navigate to the previous image"""
+    self.set_index((self._index - 1) % self._count)
 
   @blocked_by_input # Tkinter callback
   def _next_many(self, event):
@@ -755,7 +772,7 @@ class ImageManager:
       self._height -= 1
     elif event.char == 'c':
       self._height += 1
-    print(f"Height: {self._height}")
+    print(f"Height after z/c: {self._height}")
     self.redraw()
 
   @blocked_by_input # Tkinter callback
@@ -775,6 +792,22 @@ class ImageManager:
       self._scale_mode = SCALE_NONE
     notif = f"Scaling set to {self._scale_mode}"
     self._input_set_text(notif, select=False)
+    self.redraw()
+
+  @blocked_by_input # Tkinter callback
+  def _zoom_out(self, event):
+    """Decrease the scale amount by 10%"""
+    logger.debug("Scaling image down by 10%")
+    self._scale_amount -= 10
+    self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
+    self.redraw()
+
+  @blocked_by_input # Tkinter callback
+  def _zoom_in(self, event):
+    """Increase the scale amount by 10%"""
+    logger.debug("Scaling image up by 10%")
+    self._scale_amount += 10
+    self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
     self.redraw()
 
   # Tkinter callback
@@ -1042,7 +1075,7 @@ def main():
   ag.add_argument("-F", "--files", metavar="PATH", action="append",
       help="read images from %(metavar)s")
   ag.add_argument("--skip-precheck", action="store_true",
-      help="skip preloading images (useful for large image sets)")
+      help="skip pre-verifying image files (useful for large image sets)")
 
   ag = ap.add_argument_group("display options")
   ag.add_argument("--width", type=int,
@@ -1050,9 +1083,9 @@ def main():
   ag.add_argument("--height", type=int,
       help="window height (default: full screen)")
   ag.add_argument("--font-family",
-      help="override font (default: monospace)")
+      help="override font (default: {})".format(FONT))
   ag.add_argument("--font-size", type=int,
-      help="override font size, in points")
+      help="override font size, in points (default: {})".format(FONT_SIZE))
   ag.add_argument("--add-text", action="store_true",
       help="display image name and attributes over the image")
   ag.add_argument("--add-text-from", metavar="PROG",
@@ -1063,6 +1096,8 @@ def main():
   ag = ap.add_argument_group("output control")
   ag.add_argument("-o", "--out", metavar="PATH",
       help="write actions to both stdout and %(metavar)s")
+  ag.add_argument("-f", "--format", metavar="STR", default=LINE_FORMAT,
+      help="output line format (default: %(default)r)")
   ag.add_argument("-a", "--append", action="store_true",
       help="append to the -o,--out file instead of overwriting")
   ag.add_argument("-t", "--text", action="store_true",
@@ -1149,7 +1184,10 @@ def main():
   sort_mode, sort_func, sort_rev = _parse_sort_arg(args.sort, args.reverse)
 
   # Sort the images by the deduced sorting method
-  if sort_mode != SORT_NONE:
+  if sort_mode == SORT_RAND:
+    logger.debug("Shuffling images")
+    random.shuffle(images)
+  elif sort_mode != SORT_NONE:
     logger.debug("Sorting by %s (reverse=%s)", sort_mode, sort_rev)
     images.sort(key=sort_func)
     if sort_rev:
@@ -1170,6 +1208,7 @@ def main():
 
   icon = get_asset_path("image-x-generic.png")
   if not os.path.exists(icon):
+    logger.info("Icon %s not found; not using an icon", icon)
     icon = None
 
   manager = ImageManager(images, width=iwidth, height=iheight,
@@ -1183,7 +1222,7 @@ def main():
       if not args.append:
         logger.warning("%r: file exists; deleting", args.out)
         os.truncate(args.out, 0)
-    manager.add_output_file(args.out) # TODO: allow configuring line format
+    manager.add_output_file(args.out, args.format)
 
   # Register functions to call when a mark key is pressed
   if args.write1:
