@@ -13,10 +13,13 @@ Montage a video file into a collage of equally-spaced frames.
 import argparse
 import json
 import logging
+import mimetypes
 import os
 import pprint
 import subprocess
 import sys
+
+VIDEO_EXTS = ("mp4", "avi", "mkv", "flv")
 
 class VideoError(Exception):
   "Raised when something bad happens while processing the video"
@@ -295,6 +298,20 @@ def montage(inpath, outpath, nr, nc, **kwargs):
       logger.info("Dry run; not executing %s", subprocess.list2cmdline(cmd))
     os.unlink(fgtext_file)
 
+def gather_files(inputs):
+  "Gather all inputs to process"
+  for fpath in inputs:
+    if os.path.isdir(fpath):
+      logger.warning("Argument is a directory; this is not recommended")
+      for entry in os.listdir(fpath):
+        mtype = mimetypes.guess_type(entry)[0]
+        if mtype and mtype.startswith("video/"):
+          yield os.path.join(fpath, entry)
+    else:
+      if not os.path.isfile(fpath):
+        logger.warning("%r not a file nor directory; including anyway", fpath)
+      yield fpath
+
 def main():
   global logger
   # Arguments after -- are passed to ffmpeg
@@ -368,12 +385,13 @@ a filename to -o,--out.
     logger.info("Extracted ffargs %s", subprocess.list2cmdline(ffargs))
     logger.info("Remaining sys.argv: %s", sys.argv)
 
-  paths = args.path if args.path else []
+  paths = list(gather_files(args.path if args.path else []))
   if not paths:
-    ap.error("no paths given")
+    ap.error("no paths given; use `{} .` to process current directory".format(
+      sys.argv[0]))
 
   count = len(paths)
-  for idx, path in enumerate(args.path):
+  for idx, path in enumerate(paths):
     logger.info("%s/%s: %r", idx+1, count, path)
     if not os.path.exists(path):
       ap.error("\"{}\": no such file".format(path))
