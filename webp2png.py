@@ -58,37 +58,41 @@ def get_output_path(ipath, opath, ext="png"):
   if not opath:
     ofile = remap_ext(ifile, ext)
     opath = os.path.join(ibase, ofile)
-  elif os.path.isdir(opath):
+    logger.info("Saving %s to %s", ipath, opath)
+  elif opath[-1] in ("/", "\\") or os.path.isdir(opath):
+    if not os.path.isdir(opath):
+      logger.info("Creating directory %s", opath)
+      os.makedirs(opath)
     ofile = remap_ext(ifile, ext)
     opath = os.path.join(opath, ofile)
   return opath
 
-def convert_image(ipath, opath, ext="png"):
+def convert_image(ipath, opath, ext="png", force=False):
   "Convert a single image"
   opath = get_output_path(ipath, opath, ext=ext)
   logger.debug("%s -> %s", ipath, opath)
   if os.path.exists(opath):
-    logger.error("Can't convert %s: %s exists", ipath, opath)
-    return False
-
+    if not force:
+      logger.error("Can't convert %s: %s exists", ipath, opath)
+      return False
+    logger.warning("Converting %s: %s exists; overwriting", ipath, opath)
   image = load_webp_image(ipath)
   image.save(opath)
-
   return True
 
 def main():
   # pylint: disable=missing-function-docstring
-  ap = argparse.ArgumentParser(
-      formatter_class=argparse.RawDescriptionHelpFormatter,
-      epilog="""
+  ap = argparse.ArgumentParser(epilog="""
 An error is generated if OPATH is given, is not a directory, and if more
 than one file is specified.
-""")
+""", formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("path", nargs="*", help="file(s) to process")
   ap.add_argument("-i", "--input", metavar="IPATH",
       help="file containing a list of paths to process, one per line")
   ap.add_argument("-o", "--output", metavar="OPATH",
       help="destination path (see below for usage)")
+  ap.add_argument("-f", "--force", action="store_true",
+      help="overwrite destination image if it exists")
   ag = ap.add_argument_group("diagnostics")
   mg = ag.add_mutually_exclusive_group()
   mg.add_argument("-q", "--quiet", action="store_true",
@@ -112,8 +116,8 @@ than one file is specified.
   logger.debug("Processing %d file(s)", len(paths))
 
   for idx, path in enumerate(paths):
-    logger.debug("Processing %d/%d %s", idx+1, len(paths), path)
-    convert_image(path, args.output)
+    logger.info("Processing %d/%d %s", idx+1, len(paths), path)
+    convert_image(path, args.output, force=args.force)
 
 if __name__ == "__main__":
   main()
