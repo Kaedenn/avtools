@@ -86,7 +86,7 @@ def to_float(s):
     return float("NaN")
   return float(s)
 
-def format_duration(num_seconds):
+def format_duration(num_seconds, format_string=None):
   "Format a number of seconds like {}h{}m{}.{}s"
   if not isinstance(num_seconds, numbers.Number):
     num_seconds = float(num_seconds)
@@ -98,14 +98,53 @@ def format_duration(num_seconds):
   hours = "{:d}".format(nhours)
   minutes = "{:02d}".format(nmins)
   seconds = "{:02d}".format(nsecs)
+  iseconds = seconds
   if nmsec > 0:
     seconds += ".{:03d}".format(nmsec)
+
+  if format_string:
+    format_codes = {
+      "h": nhours, "m": nmins, "s": nsecs,
+      "H": hours, "M": minutes, "S": seconds,
+      "ms": nmsec,
+      "hh": hours + "h",
+      "mm": minutes + "m",
+      "ss": iseconds + "s",
+      "HH": hours + " hour{}".format("" if nhours == 1 else "s"),
+      "MM": minutes + " minute{}".format("" if nmins == 1 else "s"),
+      "SS": iseconds + " second{}".format("" if nsecs == 1 else "s"),
+      "th": "h", "tm": "m", "ts": "s",
+      "tH": "hour{}".format("" if nhours == 1 else ""),
+      "tM": "minute{}".format("" if nmins == 1 else ""),
+      "tS": "second{}".format("" if nsecs == 1 else ""),
+      "hh?": "", "mm?": "",
+      "HH?": "", "MM?": "",
+      "th?": "", "tm?": "",
+      "tH?": "", "tM?": "",
+    }
+    enable = []
+    enable_hours = ("h", "hh", "H", "HH", "th", "tH")
+    enable_mins = ("m", "mm", "M", "MM", "tm", "tM")
+    if hours != "0":
+      enable.extend(enable_hours)
+      enable.extend(enable_mins)
+    elif minutes != "00":
+      enable.extend(enable_mins)
+    for fcode in enable:
+      format_codes[fcode + "?"] = format_codes[fcode]
+    return format_string.format(**format_codes).lstrip()
+
+  parts = [
+    "{}{}".format(hours, "h"),
+    "{}{}".format(minutes, "m"),
+    "{}{}".format(seconds, "s")
+  ]
+  sep = " "
   if hours != "0":
-    return "{}h{}m{}s".format(hours, minutes, seconds)
-  elif minutes != "00":
-    return "{}m{}s".format(minutes, seconds)
-  else:
-    return "{}s".format(seconds)
+    return sep.join(parts)
+  if minutes != "00":
+    return sep.join(parts[1:])
+  return sep.join(parts[2:])
 
 def format_bytes(size, format="{}{}", places=2):
   "Format a number of bytes to <places> decimal places"
@@ -295,7 +334,7 @@ def _main_once(path, args):
       vformat = format_info["format_name"]
     vdur = format_info.get("duration")
     vsize = format_info.get("size")
-    vsdur = "None" if vdur is None else format_duration(vdur)
+    vsdur = "None" if vdur is None else format_duration(vdur, args.time_format)
     vssize = "None" if vsize is None else format_bytes(vsize, format="{} {}")
     print("{path}: {format}".format(path=vpath, format=vformat))
     print("  duration: {dur}".format(dur=vsdur))
@@ -308,7 +347,6 @@ def _main_once(path, args):
     if len(file_info["audio_streams"]) > 0:
       as0 = file_info["audio_streams"][0]
       print("  audio channels: {}".format(as0["channels"]))
-
 
 def main():
   ap = argparse.ArgumentParser(
@@ -352,6 +390,27 @@ downstream programs depending on these values being numeric.
 
 Passing multiple values to PATH is equivalent to running this program on each
 path separately. No special formatting is done for multiple paths.
+
+--time_format is for advanced users and allows you to build arbitrarily-
+complex time/duration format strings. These strings consist of format-like
+insertions. Some examples are:
+    --time-format '{hh}{mm}{ss}' gives "0h00m00s"
+    --time-format '{h:02d}{mm}{ss}' same, but hours is always two digits.
+Valid format codes are as follows:
+  h, m, s     numeric hour, minute, second intervals
+  H, M, S     formatted hour, minute, second (+msec) intervals
+  ms          integer number of milliseconds
+  hh, mm, ss  H + "h", M + "m", S + "s"
+  HH          H + " hours" (with plural behavior)
+  MM          M + " minutes" (with plural behavior)
+  SS          S + " seconds" (with plural behavior)
+  hh?         hh if hours != 0, otherwise ""
+  mm?         mm if hours != 0 or minutes != 0, otherwise ""
+  HH?, MM?    as above, using HH and MM
+  th, tm, ts  the strings "h", "m", "s"
+  tH, tM, tS  the strings "hours", "minutes", "seconds" (without spaces)
+  th?, tm?, ts?   th, tm, ts, but with hh?/mm?/ss? behavior
+  tH?, tM?, tS?   tH, tM, tS, but with HH?/MM?/SS? behavior
   """)
   ap.add_argument("path", nargs="+", help="path(s) to analyze")
   ap.add_argument("-e", "--exe", default=PROBE_COMMAND,
@@ -383,6 +442,8 @@ path separately. No special formatting is done for multiple paths.
       action="store_const", help="alias for -f %(const)s")
   mg.add_argument("-S", "--sum", dest="format", const=FORMAT_SUMMARY,
       action="store_const", help="alias for -f %(const)s")
+  ag.add_argument("--time-format", metavar="STR",
+      help="custom time/duration formatting string (for advanced users)")
 
   ag = ap.add_argument_group("diagnostics")
   ap.add_argument("-q", "--quiet", action="store_true",
