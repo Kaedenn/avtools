@@ -17,15 +17,23 @@ A user can certainly create a mark action to do such a thing, however.
 """
 
 # TODO:
-# Allow zoom adjustments (_ and +) to affect other scale modes
-# Move body of self._handle_command into self._do_input_command
-# Support the following image types:
+# * Multi-color text formatting, using tkinter.font.Font.measure
+#   "[[color=red]]Hello [[color=green]]World"
+# * Zoom/pan support; mouse drag and/or keyboard controls
+# * Allow zoom adjustments (_ and +) to affect other scale modes
+# * Allow changing between scale resample methods:
+#   PIL.Image.NEAREST   nearest neighbor; simple scaling
+#   PIL.Image.BILINEAR  linear interpolation
+#   PIL.Image.BICUBIC   cubic interpolation
+#   PIL.Image.LANCZOS   high-quality downsampling
+# * Move body of self._handle_command into self._do_input_command
+# * Support the following image types:
 #   XPM
 #     PIL.XpmImageFile breaks on images using more than 1 bit per pixel
 #   GIF (animated)
 #     Requires either multithreading or hooking into the tkinter main loop
 #     Note that tkinter is *not* thread-safe!
-# Calculate (instead of hard-coding) heights and adjusts (see TODOs below)
+# * Calculate (instead of hard-coding) heights and adjusts (see TODOs below)
 #   Calculate the size of the grid cell?
 #   Calculate the sizes of the other grid cells?
 #   Calculate the positions of the other grid cells and subtract?
@@ -120,6 +128,20 @@ Key actions:
   <_>         (<Shift-hyphen>) when zoom mode is none, decrease size by 10%
   <+>         (<Shift-equal>) when zoom mode is none, increase size by 10%
 """
+
+def pipe_program(command, lines):
+  """Pipe the lines to the command. Returns output as a list of lines"""
+  inputs = []
+  if isinstance(lines, str):
+    inputs.append(lines)
+  else:
+    inputs.extend(lines)
+  logger.debug("exec %r with %d inputs", command, len(inputs))
+
+  return subprocess.check_output(shlex.split(command),
+      input=os.linesep.join(inputs).encode(),
+      stderr=sys.stderr
+    ).decode().splitlines()
 
 def get_asset_path(name):
   """Get the file path to the named asset"""
@@ -365,6 +387,8 @@ class ImageManager:
     self._index = 0             # Current image index
     self._photo = None          # Underlying PIL photo object
     self.set_canvas_size((self._width, self._height))
+    self._real_width = 0        # Image's on-disk width
+    self._real_height = 0       # Image's on-disk height
 
     self._keybinds = collections.defaultdict(list)
     self._actions = collections.defaultdict(list)
@@ -445,6 +469,8 @@ class ImageManager:
     # Scale the image immediately
     target_w, target_h = self._width, self._height
     image_w, image_h = image.size
+    self._real_width = image_w
+    self._real_height = image_h
     want_scale = False
     if self._scale_mode == SCALE_EXACT:
       if (image_w, image_h) != (target_w, target_h):
@@ -463,7 +489,7 @@ class ImageManager:
       new_w, new_h = int(image_w/scale), int(image_h/scale)
       logger.debug("Scale %r [%d,%d] by %f to [%d,%d] (to fit %d %d)",
           path, image_w, image_h, scale, new_w, new_h, target_w, target_h)
-      image = image.resize((new_w, new_h))
+      image = image.resize((new_w, new_h), Image.NEAREST)
 
     return image
 
@@ -490,7 +516,7 @@ class ImageManager:
         font = self._font_cache[cache_key]
     return font
 
-  def _draw_line(self,
+  def _draw_text(self,
       text,
       pos=(0, 0),       # Where do we put the text?
       anchor=tk.NW,     # How is the text anchored to its position?
@@ -517,6 +543,7 @@ class ImageManager:
           anchor=anchor,
           text=text,
           font=font)
+
     posx = pos[0]
     posy = pos[1] + self._input_height # Don't cover the input box
     bg_points = (
@@ -547,7 +574,7 @@ class ImageManager:
       fkwds = dict(kwargs)
       line_kwds, line_text = extract_formatting(line)
       fkwds.update(line_kwds)
-      ids.extend(self._draw_line(line_text, pos=(linex, liney), **fkwds))
+      ids.extend(self._draw_text(line_text, pos=(linex, liney), **fkwds))
     return ids
 
   def _draw_current(self):
@@ -568,14 +595,18 @@ class ImageManager:
     text_lines = []
     if self._enable_text:
       # Add standard text for path, size, and filetime
-      imgw, imgh = self._image.size
+      text_lines.append(os.path.basename(path))
+
+      realw, realh = self._real_width, self._real_height
       stat = os.stat(path)
-      tstamp = format_timestamp(stat.st_mtime, "%Y/%m/%d %H:%M:%S")
       size = format_size(stat.st_size)
-      text_lines.extend((
-        os.path.basename(path),
-        f"Size: {size}; {imgw}x{imgh}px",
-        f"Time: {tstamp}"))
+      text_lines.append(f"Size: {size}; {realw}x{realh}px")
+      imgw, imgh = self._image.size
+      if (imgw, imgh) != (realw, realh):
+        text_lines.append(f"Resized to {imgw}x{imgh}px")
+
+      tstamp = format_timestamp(stat.st_mtime, "%Y/%m/%d %H:%M:%S")
+      text_lines.append(f"Time: {tstamp}")
 
       # Call the text functions to add whatever they want
       for func in self._text_functions:
@@ -761,7 +792,7 @@ class ImageManager:
     help_text = HELP_KEY_ACTIONS
     help_text += "\nPress any key to clear. Text will clear automatically" \
         " after 10 seconds"
-    ids = self._draw_line(help_text, (self._width/2, 0), anchor=tk.N)
+    ids = self._draw_text(help_text, (self._width/2, 0), anchor=tk.N)
     self._canvas_temp.extend(ids)
     self._root.after(10000, lambda *_: self._canvas_clear_temp())
 
@@ -904,7 +935,7 @@ class ImageManager:
     """Exit the application"""
     self.root.quit()
 
-def get_images(*paths, recursive=False, quick=False):
+def get_images(*paths, recursive=False, quick=False, cont_on_error=False):
   """Return a list of all images found in the given paths"""
   def list_path(path):
     if os.path.isfile(path):
@@ -917,6 +948,8 @@ def get_images(*paths, recursive=False, quick=False):
       else:
         for item in os.listdir(path):
           yield os.path.join(path, item)
+    elif cont_on_error:
+      logger.error("Invalid object %r", path)
     else:
       raise ValueError(f"Invalid object {path!r}")
 
@@ -1016,6 +1049,12 @@ def _print_help(argparser, args):
     sys.stderr.write(textwrap.dedent("""
   Sorting actions beginning with "r" simulate passing --reverse. For example,
   passing "--sort=rname" is equivalent to "--sort=name --reverse".
+
+  The argument to --sort-via must be a program. This program will receive the
+  list of files via stdin and must output the files in their final ordering via
+  stdout. There are no restrictions on the program's stderr.
+
+  For example, `--sort=name` can be implemented via `--sort-via sort`.
   """))
 
   if args.help_text_from or args.help_all:
@@ -1076,6 +1115,8 @@ def main():
       help="read images from %(metavar)s")
   ag.add_argument("--skip-precheck", action="store_true",
       help="skip pre-verifying image files (useful for large image sets)")
+  ag.add_argument("--ignore-errors", action="store_true",
+      help="continue even if some of the images are invalid")
 
   ag = ap.add_argument_group("display options")
   ag.add_argument("--width", type=int,
@@ -1118,10 +1159,10 @@ def main():
   mg.add_argument("-s", "--sort", metavar="KEY", default=SORT_NAME,
       choices=SORT_MODES,
       help="sort images by %(metavar)s: %(choices)s (default: %(default)s)")
+  mg.add_argument("-S", "--sort-via", metavar="PROG",
+      help="sort images by running %(metavar)s")
   ag.add_argument("-r", "--reverse", action="store_true",
       help="reverse sorting order; sort descending instead of ascending")
-  mg.add_argument("-T", action="store_true", help="sort by time (--sort=time)")
-  mg.add_argument("-S", action="store_true", help="sort by size (--sort=size)")
   mg.add_argument("--help-sort", action="store_true",
       help="show help text about sorting")
 
@@ -1168,30 +1209,29 @@ def main():
   if not images_args:
     ap.error("not enough arguments; use --help for info")
 
-  if args.T:
-    args.sort = SORT_TIME
-  elif args.S:
-    args.sort = SORT_SIZE
-
   # Get list of paths to images to examine
   images = get_images(*images_args, recursive=args.recurse,
-      quick=args.skip_precheck)
+      quick=args.skip_precheck, cont_on_error=args.ignore_errors)
   if not images:
     logger.error("No images left to scan!")
     raise SystemExit(1)
 
-  # Deduce sorting mode and function
-  sort_mode, sort_func, sort_rev = _parse_sort_arg(args.sort, args.reverse)
+  # Sort the list of files
+  if args.sort_via:
+    images = pipe_program(args.sort_via, images)
+  else:
+    # Deduce sorting mode and function
+    sort_mode, sort_func, sort_rev = _parse_sort_arg(args.sort, args.reverse)
 
-  # Sort the images by the deduced sorting method
-  if sort_mode == SORT_RAND:
-    logger.debug("Shuffling images")
-    random.shuffle(images)
-  elif sort_mode != SORT_NONE:
-    logger.debug("Sorting by %s (reverse=%s)", sort_mode, sort_rev)
-    images.sort(key=sort_func)
-    if sort_rev:
-      images = list(reversed(images))
+    # Sort the images by the deduced sorting method
+    if sort_mode == SORT_RAND:
+      logger.debug("Shuffling images")
+      random.shuffle(images)
+    elif sort_mode != SORT_NONE:
+      logger.debug("Sorting by %s (reverse=%s)", sort_mode, sort_rev)
+      images.sort(key=sort_func)
+      if sort_rev:
+        images = list(reversed(images))
 
   # Construct the application
   mkwargs = {}
