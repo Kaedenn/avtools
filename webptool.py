@@ -58,9 +58,11 @@ def webpmux_info(path):
   args = ["webpmux", "-info", path]
   logger.debug("Invoking %s", subprocess.list2cmdline(args))
   out = subprocess.check_output(args).decode()
-  for line in out.splitlines():
+  for lnr, line in enumerate(out.splitlines()):
+    logger.debug("webpmux %s line %d: %s", path, lnr, line)
     if ":" not in line:
-      logger.warning("Can't parse line %r", line)
+      if line != "No features present.":
+        logger.warning("Can't parse line %r", line)
     elif line.count(":") == 1:
       lkey, lval = line.split(":")
       yield lkey.strip(), lval.strip()
@@ -151,11 +153,11 @@ def deduce_mode(paths_in, path_out):
 def deduce_create_output(path_out):
   "Determine final output path for the create mode"
   if path_out is None:
-    logger.warning("Unknown output path; using {}".format(DEFAULT_WEBP_NAME))
+    logger.warning("Unknown output path; using %s", DEFAULT_WEBP_NAME)
     return DEFAULT_WEBP_NAME
   if os.path.isdir(path_out):
     outpath = os.path.join(path_out, DEFAULT_WEBP_NAME)
-    logger.warning("Output path is a directory; using {}".format(outpath))
+    logger.warning("Output path is a directory; using %s", outpath)
     return outpath
   if not path_out.endswith(".webp"):
     logger.warning("Output path does not end in .webp; continuing anyway")
@@ -166,10 +168,10 @@ def deduce_extract_output(path_out):
   outpath = path_out
   if path_out is None:
     outpath = os.path.join(os.curdir, DEFAULT_NAME_FORMAT)
-    logger.warning("Unknown output path; using {}".format(outpath))
+    logger.warning("Unknown output path; using %s", outpath)
   elif os.path.isdir(path_out):
     outpath = os.path.join(path_out, DEFAULT_NAME_FORMAT)
-    logger.warning("Output path is a directory; using {}".format(outpath))
+    logger.warning("Output path is a directory; using %s", outpath)
   elif not is_format_string(path_out):
     logger.warning("Output path is not a format string; expect errors")
   return outpath
@@ -200,14 +202,18 @@ def write_video(images, output_path, size_wxh=None, fps=24, encoder='MP4V'):
     out.write(img)
   out.release()
 
-def describe_webp_file(paths):
-  "Display information about a WebP file"
+def describe_webp_file(path, *args, **kwargs):
+  "Display information about a single WebP file"
+  images = load_images([path])
+  pl = "{} frame{}".format(len(images), "" if len(images) == 1 else "s")
+  print("{}: {}".format(path, pl))
+  isize = images[0].getbbox() # assume all images have the same size
+  print("Size: {}x{}".format(isize[2], isize[3]))
+
+def describe_webp_files(paths, *args, **kwargs):
+  "Display information about WebP files"
   for path in paths:
-    images = load_images([path])
-    pl = "{} frame{}".format(len(images), "" if len(images) == 1 else "s")
-    print("{}: {}".format(path, pl))
-    isize = images[0].getbbox() # assume all images have the same size
-    print("Size: {}x{}".format(isize[2], isize[3]))
+    describe_webp_file(path, *args, **kwargs)
 
 def create_webp_file(images, output_path, fps=None):
   "Create a WebP file from the given images"
@@ -235,7 +241,7 @@ def extract_webp_file(images, oformat):
     }
     image_filename = format_extract_filename(oformat, image_index+1, **kwds)
     image.save(image_filename)
-    logger.debug("Generated {}".format(image_filename))
+    logger.debug("Generated %s", image_filename)
     results.append(image_filename)
   return results
 
@@ -295,7 +301,7 @@ This is done if the output path ends in ".webp".
     mode = deduce_mode(paths, args.output)
 
   if mode == MODE_DESCRIBE:
-    describe_webp_file(paths)
+    describe_webp_files(paths)
     for path in paths:
       vinfo = get_webp_info(path)
       logger.debug(vinfo)
@@ -320,12 +326,12 @@ This is done if the output path ends in ".webp".
   elif mode == MODE_CREATE:
     images = load_images(paths)
     opath = deduce_create_output(args.output)
-    logger.info("Creating WebP file {}".format(opath))
+    logger.info("Creating WebP file %s", opath)
     create_webp_file(images, opath, fps=args.fps)
   elif mode == MODE_EXTRACT:
     images = load_images(paths)
     oformat = deduce_extract_output(args.output)
-    logger.info("Extracting WebP frames to {}".format(oformat))
+    logger.info("Extracting WebP frames to %s", oformat)
     extract_webp_file(images, oformat)
   elif mode == MODE_ENCODE:
     if not args.output:
