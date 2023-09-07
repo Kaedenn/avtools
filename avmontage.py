@@ -141,6 +141,7 @@ def probe_video(path, **kwargs):
   cmd.append(path)
   logger.debug("Running %s", subprocess.list2cmdline(cmd))
   vdata = json.loads(subprocess.check_output(cmd))
+  logger.debug("Got %r", vdata)
   vformat, vstreams = _fixup_probe(path, vdata["format"], vdata["streams"])
   vstream = None
   logger.debug("vdata %s: %s", path, pprint.pformat(vdata))
@@ -161,7 +162,7 @@ def extract_video_info(fdata, sdata):
     "frames": None,
     "width": sdata["width"],
     "height": sdata["height"],
-    "start_time": sdata["start_time"]
+    "start_time": sdata.get("start_time", 0)
   }
 
   # Determine duration
@@ -271,7 +272,7 @@ def montage(inpath, outpath, nr, nc, **kwargs):
     cmd.extend(ffargs)
   logger.info("Running %s", subprocess.list2cmdline(cmd))
   if not kwargs.get("dry", False):
-    subprocess.check_call(cmd)
+    subprocess.check_call(cmd, stderr=sys.stderr)
   else:
     logger.info("Dry run; not executing %s", subprocess.list2cmdline(cmd))
 
