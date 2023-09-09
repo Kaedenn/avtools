@@ -19,7 +19,6 @@ A user can certainly create a mark action to do such a thing, however.
 # TODO:
 # * Multi-color text formatting, using tkinter.font.Font.measure
 #   "[[color=red]]Hello [[color=green]]World"
-# * Zoom/pan support; mouse drag and/or keyboard controls
 # * Allow zoom adjustments (_ and +) to affect other scale modes
 # * Allow changing between scale resample methods:
 #   PIL.Image.NEAREST   nearest neighbor; simple scaling
@@ -28,6 +27,7 @@ A user can certainly create a mark action to do such a thing, however.
 #   PIL.Image.LANCZOS   high-quality downsampling
 # * Move body of self._handle_command into self._do_input_command
 # * Support the following image types:
+#   WebP
 #   XPM
 #     PIL.XpmImageFile breaks on images using more than 1 bit per pixel
 #   GIF (animated)
@@ -90,6 +90,7 @@ SORT_MODES = (
 SCALE_NONE = "none"
 SCALE_SHRINK = "shrink"
 SCALE_EXACT = "exact"
+ZOOM_SCALE_PERCENT = 10   # Amount to scale the image using _ or +
 
 MODE_NONE = "none"
 MODE_RENAME = "rename"
@@ -327,6 +328,11 @@ class ImageManager:
     root.bind_all("<Key-underscore>", self._zoom_out)
     root.bind_all("<Key-plus>", self._zoom_in)
     root.bind_all("<Key>", self._on_keypress)
+    root.bind_all("<ButtonPress-1>", self._on_mouse_press)
+    root.bind_all("<B1-Motion>", self._on_mouse_pan)
+    root.bind_all("<ButtonRelease-1>", self._on_mouse_pan)
+    root.bind_all("<ButtonPress-3>", self._on_mouse_right)
+    root.bind_all("<MouseWheel>", self._on_mouse_scroll)
     root.bind("<Configure>", self._update_window)
     for i in range(1, 10):
       root.bind_all(f"<Key-{i}>", self._mark_image)
@@ -342,8 +348,13 @@ class ImageManager:
 
     self._enable_text = show_text
     self._text_functions = []
+
+    # Image size and position
     self._scale_mode = SCALE_SHRINK
-    self._scale_amount = 0 # percentage, >0 to zoom <0 to shrink
+    self._scale_amount = 0        # Percentage, >0 to zoom and <0 to shrink
+    self._center_offset = [0, 0]  # Tracking delta for image panning
+    self._hold_offset = [0, 0]    # Previous offset used during dragging
+    self._drag_start = [0, 0]     # Where the dragging started
 
     self._font = tkfont.Font(family=font_family, size=font_size)
     self._font_family = font_family
@@ -371,6 +382,8 @@ class ImageManager:
     self._text_ids = []
 
     # Create primary input box (which starts hidden)
+    self._input_mode = MODE_NONE
+    self._last_input = ""
     self._input_width = input_width
     self._input_height = self.line_height() + 2 * PADDING
     self._input = tk.Entry(frame, font=self._font, width=self._input_width)
@@ -378,14 +391,14 @@ class ImageManager:
     self._input.bind("<Key-Return>", self._input_enter)
     self._input.lower(self._canvas)
 
-    # Configuration after widget construction
-    self._input_mode = MODE_NONE
-    self._last_input = ""
+    # Image list and current image objects
     self._images = list(images) # Loaded images
     self._count = len(self._images) # Total number of images
-    self._image = None          # Current image
     self._index = 0             # Current image index
+    self._image = None          # Current image
     self._photo = None          # Underlying PIL photo object
+
+    # Canvas dimensions
     self.set_canvas_size((self._width, self._height))
     self._real_width = 0        # Image's on-disk width
     self._real_height = 0       # Image's on-disk height
@@ -402,10 +415,7 @@ class ImageManager:
     """Return the current font's line height"""
     return self._font.metrics()["linespace"]
 
-  @property
-  def root(self):
-    """Return the root Tk() object"""
-    return self._root
+  root = property(lambda self: self._root)
 
   def add_output_file(self, path, lformat=LINE_FORMAT):
     """Write mark actions to the given path"""
@@ -587,8 +597,8 @@ class ImageManager:
     self._canvas.delete(tk.ALL) # Clear the canvas
     # Display the image, centered
     self._canvas.create_image(
-        self._width/2,
-        self._height/2,
+        self._width/2 + self._center_offset[0],
+        self._height/2 + self._center_offset[1],
         image=self._photo,
         anchor=tk.CENTER)
 
@@ -619,8 +629,10 @@ class ImageManager:
     if text_lines:
       self._text_ids = self._draw_text_lines(text_lines)
 
-  def set_index(self, index):
+  def set_index(self, index, recenter=True):
     """Sets the index and displays the image at that index"""
+    if recenter:
+      self._center_offset = [0, 0]
     self._index = index
     path = self._images[index]
     logger.debug("Displaying image %s of %s %r", index+1, self._count, path)
@@ -634,9 +646,9 @@ class ImageManager:
       self._draw_current()
     self.root.title(new_title)
 
-  def redraw(self):
+  def redraw(self, recenter=True):
     """Recomputes and redraws the current image"""
-    self.set_index(self._index)
+    self.set_index(self._index, recenter=recenter)
 
   def _action(self, *args):
     """action(path, action) or action(action): add an action"""
@@ -698,7 +710,7 @@ class ImageManager:
 
   def _on_keypress(self, event):
     """Called when any key is pressed"""
-    logger.debug("received keypress %r", event)
+    logger.debug("Received keypress %r", event)
     if self._keybinds.get(event.keysym):
       format_keys = dict(
         file=self.path(),
@@ -714,7 +726,39 @@ class ImageManager:
       for command in self._keybinds[event.keysym]:
         cmd = command.format(**format_keys)
         logger.debug("Invoking %r", cmd)
+        # TODO: Handle the command, if any
     self._canvas_clear_temp()
+
+  @blocked_by_input # Tkinter callback
+  def _on_mouse_press(self, event):
+    """Called when the left mouse button is pressed"""
+    self._drag_start = [event.x, event.y]
+    self._hold_offset[0] = self._center_offset[0]
+    self._hold_offset[1] = self._center_offset[1]
+
+  @blocked_by_input # Tkinter callback
+  def _on_mouse_pan(self, event):
+    """Called while we're panning the image"""
+    delta_x = event.x - self._drag_start[0]
+    delta_y = event.y - self._drag_start[1]
+    final_x = self._hold_offset[0] + delta_x
+    final_y = self._hold_offset[1] + delta_y
+    if self._center_offset != [final_x, final_y]:
+      self._center_offset[0] = final_x
+      self._center_offset[1] = final_y
+      self._draw_current()
+
+  @blocked_by_input # Tkinter callback
+  def _on_mouse_right(self, event):
+    """Called when the right mouse button is pressed"""
+    if self._center_offset != [0, 0]:
+      self._center_offset = [0, 0]
+      self._draw_current()
+
+  @blocked_by_input # Tkinter callback
+  def _on_mouse_scroll(self, event):
+    """Called when the mouse scroll wheel is used (does not work on Linux)"""
+    pass
 
   def _canvas_clear_temp(self):
     """Delete temporary items drawn on the canvas"""
@@ -804,13 +848,13 @@ class ImageManager:
     elif event.char == 'c':
       self._height += 1
     print(f"Height after z/c: {self._height}")
-    self.redraw()
+    self.redraw(recenter=False)
 
   @blocked_by_input # Tkinter callback
   def _toggle_text(self, event):
     """Toggle base text display"""
     self._enable_text = not self._enable_text
-    self.redraw()
+    self.redraw(recenter=False)
 
   @blocked_by_input # Tkinter callback
   def _toggle_zoom(self, event):
@@ -821,25 +865,22 @@ class ImageManager:
       self._scale_mode = SCALE_EXACT
     else:
       self._scale_mode = SCALE_NONE
-    notif = f"Scaling set to {self._scale_mode}"
-    self._input_set_text(notif, select=False)
-    self.redraw()
+    self._input_set_text(f"Scaling set to {self._scale_mode}", select=False)
+    self.redraw(recenter=False)
 
   @blocked_by_input # Tkinter callback
   def _zoom_out(self, event):
     """Decrease the scale amount by 10%"""
-    logger.debug("Scaling image down by 10%")
-    self._scale_amount -= 10
+    self._scale_amount -= ZOOM_SCALE_PERCENT
     self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
-    self.redraw()
+    self.redraw(recenter=False)
 
   @blocked_by_input # Tkinter callback
   def _zoom_in(self, event):
     """Increase the scale amount by 10%"""
-    logger.debug("Scaling image up by 10%")
-    self._scale_amount += 10
+    self._scale_amount += ZOOM_SCALE_PERCENT
     self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
-    self.redraw()
+    self.redraw(recenter=False)
 
   # Tkinter callback
   def _update_window(self, event):
@@ -848,7 +889,7 @@ class ImageManager:
     if event.widget == self._root:
       self._width = event.width
       self._height = event.height
-      self.redraw()
+      self.redraw(recenter=False)
 
   def _do_input_rename(self, value):
     """Handle the rename input"""
@@ -1113,6 +1154,8 @@ def main():
       help="descend into directories recursively to find images")
   ag.add_argument("-F", "--files", metavar="PATH", action="append",
       help="read images from %(metavar)s")
+  ag.add_argument("-M", "--max", type=int, metavar="NUM",
+      help="after sorting, keep only the first %(metavar)s images")
   ag.add_argument("--skip-precheck", action="store_true",
       help="skip pre-verifying image files (useful for large image sets)")
   ag.add_argument("--ignore-errors", action="store_true",
@@ -1161,10 +1204,11 @@ def main():
       help="sort images by %(metavar)s: %(choices)s (default: %(default)s)")
   mg.add_argument("-S", "--sort-via", metavar="PROG",
       help="sort images by running %(metavar)s")
-  ag.add_argument("-r", "--reverse", action="store_true",
-      help="reverse sorting order; sort descending instead of ascending")
   mg.add_argument("--help-sort", action="store_true",
       help="show help text about sorting")
+  ag.add_argument("--seed", help="override random seed for --sort=rand")
+  ag.add_argument("-r", "--reverse", action="store_true",
+      help="reverse sorting order; sort descending instead of ascending")
 
   ag = ap.add_argument_group("logging")
   mg = ag.add_mutually_exclusive_group()
@@ -1226,12 +1270,21 @@ def main():
     # Sort the images by the deduced sorting method
     if sort_mode == SORT_RAND:
       logger.debug("Shuffling images")
-      random.shuffle(images)
+      if args.seed:
+        rand = random.Random()
+        rand.seed(args.seed)
+        rand.shuffle(images)
+      else:
+        random.shuffle(images)
     elif sort_mode != SORT_NONE:
       logger.debug("Sorting by %s (reverse=%s)", sort_mode, sort_rev)
       images.sort(key=sort_func)
       if sort_rev:
         images = list(reversed(images))
+
+  if args.max is not None:
+    logger.debug("Keeping only %d of %d images", args.max, len(images))
+    images = images[:args.max]
 
   # Construct the application
   mkwargs = {}
