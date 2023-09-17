@@ -5,6 +5,7 @@ Montage a video file into a collage of equally-spaced frames.
 """
 
 # TODO/FIXME:
+# *) Allow parallel execution
 # *) Allow user to configure paths to ffmpeg, ffprobe
 # *) Allow user to select avconv over ffmpeg
 # *) Add overwrite pre-check and configuration so ffmpeg/avconv doesn't prompt
@@ -56,19 +57,18 @@ def file_size(filepath):
 
 def format_timestamp(sec):
   "Convert seconds (int or float) to a timestamp HH:MM:SS string"
-  sec = int(sec)
-  ns = sec % 60
-  nm = sec // 60 % 60
-  nh = sec // 60 // 60 % 60
-  ret = "{:02}:{:02}:{:02}".format(nh, nm, ns)
-  return ret
+  sec_nr = int(sec)
+  nsec = sec_nr % 60
+  nmin = sec_nr // 60 % 60
+  nhour = sec_nr // 60 // 60 % 60
+  return "{:02}:{:02}:{:02}".format(nhour, nmin, nsec)
 
-def is_number(n):
+def is_number(num):
   "Return True if the value can be parsed as a float"
   try:
-    float(n)
+    float(num)
     return True
-  except ValueError as _:
+  except ValueError:
     return False
 
 def format_bytes(size):
@@ -80,21 +80,21 @@ def format_bytes(size):
     size = size / 1024.0
   return "{} {}".format(round(size, 2), names[mag])
 
-def _parse_frame_rate(fr):
+def parse_frame_rate(frame_rate):
   "Convert '<num>/<num>' frame-rate to a float"
-  if fr.count("/") == 1:
-    fn, fd = map(float, fr.split("/"))
+  if frame_rate.count("/") == 1:
+    fnumer, fdenom = map(float, frame_rate.split("/"))
   else:
-    fn, fd = float(fr), 1
-  if fd != 0:
-    result = fn / fd
-    logger.debug("Frame-rate %r -> %s fps", fr, result)
+    fnumer, fdenom = float(frame_rate), 1
+  if fdenom != 0:
+    result = fnumer / fdenom
+    logger.debug("Frame-rate %r -> %s fps", frame_rate, result)
   else:
     result = None
-    logger.debug("Frame-rate %r -> None; divide by zero", fr)
+    logger.debug("Frame-rate %r -> None; divide by zero", frame_rate)
   return result
 
-def _find_nb_frames(path):
+def find_nb_frames(path):
   "Try (using mediainfo) to deduce the number of frames the video has"
   try:
     cmd = ["mediainfo", "--Inform=Video;%FrameCount%", path]
@@ -113,23 +113,23 @@ def _fixup_probe(path, vformat, vstreams):
   "Attempt to fix common issues with ffprobe output"
   if "size" not in vformat:
     vformat["size"] = f"{os.stat(path).st_size}"
-  for snr, stream in enumerate(vstreams):
+  for stream_num, stream in enumerate(vstreams):
     if stream.get("codec_type") == "video":
       if "nb_frames" not in stream:
-        logger.debug("%s stream %d: get nb_frames via mediainfo...", path, snr)
-        fc = _find_nb_frames(path)
-        if fc is not None:
-          stream["nb_frames"] = fc
+        logger.debug("%s:%d: get nb_frames via mediainfo...", path, stream_num)
+        frame_count = find_nb_frames(path)
+        if frame_count is not None:
+          stream["nb_frames"] = frame_count
       if "nb_frames" not in stream:
-        logger.debug("%s stream %d: get nb_frames...", path, snr)
+        logger.debug("%s stream %d: get nb_frames...", path, stream_num)
         duration = stream.get("duration", vformat.get("duration"))
         if duration is not None and is_number(duration):
           dsec = float(duration)
-          afr = stream.get("avg_frame_rate")
-          if afr is not None and afr != "0/0":
-            fr = _parse_frame_rate(afr)
-            if fr is not None:
-              stream["nb_frames"] = f"{int(dsec * fr)}"
+          avg_frame_rate = stream.get("avg_frame_rate")
+          if avg_frame_rate is not None and avg_frame_rate != "0/0":
+            frame_rate = parse_frame_rate(avg_frame_rate)
+            if frame_rate is not None:
+              stream["nb_frames"] = f"{int(dsec * frame_rate)}"
       # If the above failed, store -1
       if "nb_frames" not in stream:
         stream["nb_frames"] = "-1"
@@ -145,11 +145,11 @@ def probe_video(path, **kwargs):
   vformat, vstreams = _fixup_probe(path, vdata["format"], vdata["streams"])
   vstream = None
   logger.debug("vdata %s: %s", path, pprint.pformat(vdata))
-  for snr, s in enumerate(vstreams):
-    if s.get("codec_type") == "video":
-      logger.debug("stream %d: %s", snr, pprint.pformat(s))
-      if s.get("nb_frames", "X").isdigit():
-        vstream = s
+  for stream_num, stream in enumerate(vstreams):
+    if stream.get("codec_type") == "video":
+      logger.debug("stream %d: %s", stream_num, pprint.pformat(stream))
+      if stream.get("nb_frames", "X").isdigit():
+        vstream = stream
         # No break so we get the last one
   if vstream is None:
     logger.debug("vdata: %r", vdata)
@@ -178,16 +178,16 @@ def extract_video_info(fdata, sdata):
   if "nb_frames" in sdata:
     data["frames"] = sdata["nb_frames"]
   elif "duration" in fdata and "avg_frame_rate" in sdata:
-    afr = sdata["avg_frame_rate"]
-    fn, fd = "0", "1"
-    if is_number(afr):
-      fn = afr
-    elif afr.count("/") == 1:
-      fn, fd = afr.split("/")
-    if fd != "0":
-      d = float(fdata["duration"])
-      fr = float(fn) / float(fd)
-      data["frames"] = d * fr
+    avg_frame_rate = sdata["avg_frame_rate"]
+    fnumer, fdenom = "0", "1"
+    if is_number(avg_frame_rate):
+      fnumer = avg_frame_rate
+    elif avg_frame_rate.count("/") == 1:
+      fnumer, fdenom = avg_frame_rate.split("/")
+    if fdenom != "0":
+      duration = float(fdata["duration"])
+      frate = float(fnumer) / float(fdenom)
+      data["frames"] = duration * frate
 
   if data.get("frames") is None:
     # Didn't find the frame count
@@ -196,11 +196,11 @@ def extract_video_info(fdata, sdata):
 
   return data
 
-def montage(inpath, outpath, nr, nc, **kwargs):
+def montage(inpath, outpath, nrows, ncols, **kwargs):
   """
   Read <inpath> and write a collage of equally-distributed frames to <outpath>.
-  The collage is <nr> rows by <nc> columns. Each frame is taken equal distances
-  apart, where possible.
+  The collage is <nrows> rows by <ncols> columns. Each frame is taken equal
+  distances apart, where possible.
 
   Keyword arguments:
     ffquiet: boolean: decrease ffmpeg's output
@@ -223,42 +223,41 @@ def montage(inpath, outpath, nr, nc, **kwargs):
   # Examine the video and calculate various necessary things
   fdata, sdata = probe_video(inpath) # TODO: add kwargs
   data = extract_video_info(fdata, sdata)
-  w, h = int(data["width"]), int(data["height"])
-  nf = int(data["frames"])
+  width, height = int(data["width"]), int(data["height"])
+  num_frames = int(data["frames"])
   sts = format_timestamp(float(data["start_time"]))
   ets = format_timestamp(float(data["duration"]))
-  # pylint: disable=logging-format-interpolation
-  logger.debug(f"Size: w={w} h={h}")
-  logger.debug(f"Frames: {nf}")
-  logger.debug(f"Start timestamp: {sts}")
-  logger.debug(f"Ending timestamp: {ets}")
-  logger.debug(f"Frame selection interval: {nr*nc} over {nf} frames")
-  logger.debug(f"Frame selection interval: one each {nf//(nr*nc)} frames")
-  # pylint: enable=logging-format-interpolation
+  logger.debug("Size: width=%s height=%s", width, height)
+  logger.debug("Frames: %s", num_frames)
+  logger.debug("Start timestamp: %s", sts)
+  logger.debug("Ending timestamp: %s", ets)
+  logger.debug("Frame selection interval: %s over %s frames", nrows*ncols, num_frames)
+  logger.debug("Frame selection interval: one each %s frames", num_frames//(nrows*ncols))
 
   # Calculate frame width and height
-  fw, fh = w, h
+  frame_width, frame_height = width, height
   if size is not None:
     if size[0] is not None:
-      fw = round(float(size[0]) / nc)
+      frame_width = round(float(size[0]) / ncols)
     if size[1] is not None:
-      fh = round(float(size[1]) / nr)
+      frame_height = round(float(size[1]) / nrows)
     if size[0] is None and size[1] is not None:
-      # Calculate w based on h
-      fw = float(fh) / h * w
+      # Calculate width based on height
+      frame_width = float(frame_height) / height * width
     elif size[0] is not None and size[1] is None:
-      # Calculate h based on w
-      fh = float(fw) / w * h
+      # Calculate height based on width
+      frame_height = float(frame_width) / width * height
   if scale is not None:
-    fw = w * scale
-    fh = h * scale
+    frame_width = width * scale
+    frame_height = height * scale
 
   # Build the ffmpeg command line
   logger.info("filesize: %s", format_bytes(os.stat(inpath).st_size))
-  logger.info("isize: %sx%s, osize=%sx%s", w, h, fw, fh)
-  logger.info("frames: %s (%s to %s)", nf, sts, ets)
-  func = "not(mod(n\\,{}))".format(nf // (nr * nc))
-  expr = "select={},scale={}:{},tile={nc}x{nr}".format(func, fw, fh, nr=nr, nc=nc)
+  logger.info("isize: %sx%s, osize=%sx%s", width, height, frame_width, frame_height)
+  logger.info("frames: %s (%s to %s)", num_frames, sts, ets)
+  func = "not(mod(n\\,{}))".format(num_frames // (nrows * ncols))
+  expr = "select={},scale={}:{},tile={ncols}x{nrows}".format(
+      func, frame_width, frame_height, nrows=nrows, ncols=ncols)
   cmd = ["ffmpeg", "-ss", sts]
   if ffiargs is not None:
     cmd.extend(ffiargs)
@@ -314,7 +313,8 @@ def gather_files(inputs):
       yield fpath
 
 def main():
-  global logger
+  global logger # pylint: disable=global-statement
+
   # Arguments after -- are passed to ffmpeg
   ffargs = []
   if "--" in sys.argv:
@@ -428,11 +428,14 @@ a filename to -o,--out.
       if not args.continue_on_error:
         raise
 
+def _on_import():
+  logging_format = "%(module)s:%(lineno)s:%(levelname)s: %(message)s"
+  logging.basicConfig(format=logging_format, level=logging.INFO)
+  return logging.getLogger(__name__)
+
 if __name__ == "__main__":
   main()
 else:
-  logging_format = "%(module)s:%(lineno)s:%(levelname)s: %(message)s"
-  logging.basicConfig(format=logging_format, level=logging.INFO)
-  logger = logging.getLogger(__name__)
+  logger = _on_import()
 
 # vim: set ts=2 sts=2 sw=2:
