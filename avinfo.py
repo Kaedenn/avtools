@@ -104,6 +104,7 @@ def format_duration(num_seconds, format_string=None):
 
   if format_string:
     format_codes = {
+      "NS": str(num_seconds),
       "h": nhours, "m": nmins, "s": nsecs,
       "H": hours, "M": minutes, "S": seconds,
       "ms": nmsec,
@@ -397,6 +398,7 @@ insertions. Some examples are:
     --time-format '{hh}{mm}{ss}' gives "0h00m00s"
     --time-format '{h:02d}{mm}{ss}' same, but hours is always two digits.
 Valid format codes are as follows:
+  NS          total duration as a fractional number of seconds
   h, m, s     numeric hour, minute, second intervals
   H, M, S     formatted hour, minute, second (+msec) intervals
   ms          integer number of milliseconds
