@@ -131,7 +131,9 @@ Key actions:
 """
 
 def pipe_program(command, lines):
-  """Pipe the lines to the command. Returns output as a list of lines"""
+  """
+  Pipe the lines to the command. Returns output as a list of lines.
+  """
   inputs = []
   if isinstance(lines, str):
     inputs.append(lines)
@@ -139,10 +141,11 @@ def pipe_program(command, lines):
     inputs.extend(lines)
   logger.debug("exec %r with %d inputs", command, len(inputs))
 
-  return subprocess.check_output(shlex.split(command),
-      input=os.linesep.join(inputs).encode(),
-      stderr=sys.stderr
-    ).decode().splitlines()
+  cmd_args = shlex.split(command)
+  proc = Popen(cmd_args, stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
+  cmd_input = os.linesep.join(inputs).encode()
+  out_data, _ = proc.communicate(input=cmd_input)
+  return out_data.decode().splitlines()
 
 def get_asset_path(name):
   """Get the file path to the named asset"""
@@ -227,8 +230,10 @@ def _parse_format_token(token):
   tkey, tval = None, None
   if token in ("bold", "normal"):
     tkey, tval = "bold", (token == "bold")
-  elif token == "italic":
-    tkey, tval = "italic", True
+  elif token in ("italic", "roman"):
+    tkey, tval = "italic", (token == "italic")
+  elif token.startswith("x-"):
+    tkey, tval = token[2:], None
   elif "=" in token:
     fkey, fval = token.split("=", 1)
     if fkey in ("bold", "italic"):
@@ -263,7 +268,60 @@ def extract_formatting(text):
         fields[tkey] = tval
   return fields, remainder
 
-def blocked_by_input(func):
+def extract_regions(text, start_token, end_token):
+  """
+  Split text into pieces via start_token and end_token.
+
+  Returns a list of strings. Each string is either raw text or both begins with
+  the start token and ends with the end token.
+
+  Nesting regions is not allowed.
+  """
+  curr_pos = 0
+  pieces = []
+  start_pos = text.find(start_token, curr_pos)
+  while start_pos > -1:
+    end_pos = text.find(end_token, start_pos)
+    if end_pos > start_pos:
+      if start_pos > curr_pos:
+        pieces.append(text[curr_pos:start_pos])
+      curr_pos = end_pos + len(end_token)
+      pieces.append(text[start_pos:curr_pos])
+    start_pos = text.find(start_token, curr_pos)
+  if -1 < curr_pos < len(text):
+    pieces.append(text[curr_pos:])
+  return pieces
+
+def parse_formatted_text(text, incremental=False):
+  """
+  Extract embedded format information, returning a sequence of pairs that can
+  be used to draw that text.
+
+  Formatting rules are reset on each new token unless incremental=True.
+
+  Returns a list of pairs (text_rules, text) where:
+    text_rules is dict[str, str]
+    text is str
+  """
+  results = []
+  rule = {}
+  for region in extract_regions(text, "[[", "]]"):
+    if region.startswith("[[") and region.endswith("]]"):
+      rule_parts = region[2:-2].replace(", ", ",").split(",")
+      for part in rule_parts:
+        rule_key, rule_val = _parse_format_token(part)
+        if rule_key is not None:
+          rule[rule_key] = rule_val
+      if "incremental" in rule:
+        del rule["incremental"]
+        incremental = True
+    else:
+      results.append((rule, region))
+      if not incremental:
+        rule = {}
+  return results
+
+def _blocked_by_input(func):
   """Restrict a function from being called if self._input has focus"""
   @functools.wraps(func)
   def wrapper(self, *args, **kwargs):
@@ -451,6 +509,27 @@ class ImageManager:
     """Return the path to the current image"""
     return self._images[self._index]
 
+  def set_index(self, index, recenter=True):
+    """Sets the index and displays the image at that index"""
+    if recenter:
+      self._center_offset = [0, 0]
+    self._index = index
+    path = self._images[index]
+    logger.debug("Displaying image %s of %s %r", index+1, self._count, path)
+    new_title = f"{index+1}/{self._count} {path}"
+    self._image = self._get_image(path)
+    if self._image is None:
+      logger.error("Failed to load %r!", path)
+      new_title = "ERROR! " + new_title
+      self._canvas.delete(tk.ALL)
+    else:
+      self._draw_current()
+    self.root.title(new_title)
+
+  def redraw(self, recenter=True):
+    """Recomputes and redraws the current image"""
+    self.set_index(self._index, recenter=recenter)
+
   def hide_input(self): # TODO: move text up
     """Hide the input box"""
     self._input.lower(self._canvas)
@@ -463,9 +542,9 @@ class ImageManager:
     #self._input_height = self.line_height() + 2*PADDING
     #self._draw_current()
 
-  def _resize_input(self, s):
-    """Ensure the input is wide enough to display the string s"""
-    min_chrs = max(len(s), INPUT_START_WIDTH)
+  def _resize_input(self, text):
+    """Ensure the input is wide enough to display the text"""
+    min_chrs = max(len(text), INPUT_START_WIDTH)
     max_chrs = int(round(self._width / self.char_width()))
     self._input["width"] = min(min_chrs, max_chrs)
 
@@ -526,19 +605,19 @@ class ImageManager:
         font = self._font_cache[cache_key]
     return font
 
-  def _draw_text(self,
+  def draw_text(self,
       text,
       pos=(0, 0),       # Where do we put the text?
       anchor=tk.NW,     # How is the text anchored to its position?
       fgcolor="white",  # Foreground (text) color
       bgcolor="black",  # Background (shadow) color
-      border=1,         # Shadow size (distance between fg and bg)
+      border=1,         # Shadow size (background offset in pixels)
       shiftx=2,         # Nudge text by this amount horizontally
       shifty=2,         # Nudge text by this amount vertically
-      bold=True,        # Use bold weight over normal
-      italic=False,     # Use italic slant over roman
-      size=None,        # Use custom size (None -> self._font_size)
-      family=None):     # Use custom font face (None -> self._font_family)
+      bold=True,        # Make the text bold
+      italic=False,     # Make the text italicized
+      size=None,        # Use custom size over self._font_size
+      family=None):     # Use custom font family over self._font_family
     """
     Draw text on the canvas with the given parameters. Returns the Tkinter IDs
     for the items created. The last ID is always the foreground text.
@@ -549,10 +628,7 @@ class ImageManager:
     def draw_string(textx, texty, fill):
       """Helper function: actually draw the text"""
       return self._canvas.create_text(textx+shiftx, texty+shifty,
-          fill=fill,
-          anchor=anchor,
-          text=text,
-          font=font)
+          fill=fill, anchor=anchor, text=text, font=font)
 
     posx = pos[0]
     posy = pos[1] + self._input_height # Don't cover the input box
@@ -567,25 +643,29 @@ class ImageManager:
     ids.append(draw_string(posx, posy, fgcolor))
     return ids
 
-  def _draw_text_lines(self, lines,
-      pos=(0, 0),
-      bold=True,
-      italic=False,
-      size=None,
-      family=None,
-      **kwargs):
-    """Draw several lines of text"""
-    font = self._get_font(bold=bold, italic=italic, size=size, family=family)
-    lspace = font.metrics("linespace")
-    ids = []
-    for lnr, line in enumerate(lines):
+  def _draw_text_lines(self, lines, pos=(0, 0), incremental=False, **kwargs):
+    """
+    Draw several lines of text.
+
+    Embedded format rules will take precedence over keyword arguments.
+    """
+    oids = []
+    line_space = self._font.metrics("linespace")
+    for linenr, line in enumerate(lines):
       linex = pos[0]
-      liney = pos[1] + lspace * lnr
-      fkwds = dict(kwargs)
-      line_kwds, line_text = extract_formatting(line)
-      fkwds.update(line_kwds)
-      ids.extend(self._draw_text(line_text, pos=(linex, liney), **fkwds))
-    return ids
+      for format_rules, text in parse_formatted_text(line, incremental):
+        f_bold = format_rules.get("bold", kwargs.get("bold"))
+        f_italic = format_rules.get("italic", kwargs.get("italic"))
+        f_size = format_rules.get("size", kwargs.get("size"))
+        f_family = format_rules.get("family", kwargs.get("family"))
+        font = self._get_font(f_bold, f_italic, f_size, f_family)
+        line_space = font.metrics("linespace")
+        liney = pos[1] + line_space * linenr
+        fkwds = dict(kwargs)
+        fkwds.update(format_rules)
+        oids.extend(self.draw_text(text, pos=(linex, liney), **fkwds))
+        linex += font.measure(text)
+    return oids
 
   def _draw_current(self):
     """Draw self._image to self._canvas"""
@@ -628,27 +708,6 @@ class ImageManager:
 
     if text_lines:
       self._text_ids = self._draw_text_lines(text_lines)
-
-  def set_index(self, index, recenter=True):
-    """Sets the index and displays the image at that index"""
-    if recenter:
-      self._center_offset = [0, 0]
-    self._index = index
-    path = self._images[index]
-    logger.debug("Displaying image %s of %s %r", index+1, self._count, path)
-    new_title = f"{index+1}/{self._count} {path}"
-    self._image = self._get_image(path)
-    if self._image is None:
-      logger.error("Failed to load %r!", path)
-      new_title = "ERROR! " + new_title
-      self._canvas.delete(tk.ALL)
-    else:
-      self._draw_current()
-    self.root.title(new_title)
-
-  def redraw(self, recenter=True):
-    """Recomputes and redraws the current image"""
-    self.set_index(self._index, recenter=recenter)
 
   def _action(self, *args):
     """action(path, action) or action(action): add an action"""
@@ -729,14 +788,14 @@ class ImageManager:
         # TODO: Handle the command, if any
     self._canvas_clear_temp()
 
-  @blocked_by_input # Tkinter callback
+  # Tkinter callback
   def _on_mouse_press(self, event):
     """Called when the left mouse button is pressed"""
     self._drag_start = [event.x, event.y]
     self._hold_offset[0] = self._center_offset[0]
     self._hold_offset[1] = self._center_offset[1]
 
-  @blocked_by_input # Tkinter callback
+  # Tkinter callback
   def _on_mouse_pan(self, event):
     """Called while we're panning the image"""
     delta_x = event.x - self._drag_start[0]
@@ -748,17 +807,16 @@ class ImageManager:
       self._center_offset[1] = final_y
       self._draw_current()
 
-  @blocked_by_input # Tkinter callback
+  # Tkinter callback
   def _on_mouse_right(self, event):
     """Called when the right mouse button is pressed"""
     if self._center_offset != [0, 0]:
       self._center_offset = [0, 0]
       self._draw_current()
 
-  @blocked_by_input # Tkinter callback
+  # Tkinter callback
   def _on_mouse_scroll(self, event):
     """Called when the mouse scroll wheel is used (does not work on Linux)"""
-    pass
 
   def _canvas_clear_temp(self):
     """Delete temporary items drawn on the canvas"""
@@ -766,81 +824,81 @@ class ImageManager:
       self._canvas.delete(item)
     self._canvas_temp = []
 
-  @blocked_by_input # Tkinter callback and manual call
+  @_blocked_by_input # Tkinter callback and manual call
   def _next_image(self, event):
     """Navigate to the next image"""
     self.set_index((self._index + 1) % self._count)
 
-  @blocked_by_input # Tkinter callback and manual call
+  @_blocked_by_input # Tkinter callback and manual call
   def _prev_image(self, event):
     """Navigate to the previous image"""
     self.set_index((self._index - 1) % self._count)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _next_many(self, event):
     """Navigate to the 10th next image"""
     self.set_index((self._index + 10) % self._count)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _prev_many(self, event):
     """Navigate to the 10th previous image"""
     self.set_index((self._index - 10) % self._count)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _rename_image(self, event):
     """Rename the current image"""
     self._input_mode = MODE_RENAME
     self._input_set_text(os.path.basename(self.path()), select=True)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _delete_image(self, event):
     """Delete the current image"""
     self._action(("DELETE",))
     self._next_image(event)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _go_to_image(self, event):
     """Navigate to the image with the given number"""
     self._input_mode = MODE_SET_IMAGE
     self._input_set_text(self._last_input, select=True)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _find_image(self, event):
     """Show the first image filename starting with a given prefix"""
     self._input_mode = MODE_GOTO
     self._input_set_text(self._last_input, select=True)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _mark_image(self, event):
     """Mark an image for later examination"""
     if event.char in self._functions:
       self._functions[event.char](self.path())
     self._action((f"MARK-{event.char}",))
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _label(self, event):
     """Label an image"""
     self._input_mode = MODE_LABEL
     self._input_set_text("Label?", select=True)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _enter_command(self, event):
     """Let the user enter an arbitrary command"""
     self._input_mode = MODE_COMMAND
     self._input_set_text("Command?", select=True)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _show_help(self, event):
     """Display help text to the user"""
     sys.stderr.write(HELP_KEY_ACTIONS)
     help_text = HELP_KEY_ACTIONS
     help_text += "\nPress any key to clear. Text will clear automatically" \
         " after 10 seconds"
-    ids = self._draw_text(help_text, (self._width/2, 0), anchor=tk.N)
+    ids = self.draw_text(help_text, (self._width/2, 0), anchor=tk.N)
     self._canvas_temp.extend(ids)
     self._root.after(10000, lambda *_: self._canvas_clear_temp())
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _adjust(self, event):
     """Fine-tune image size (for testing)"""
     if event.char == 'z':
@@ -850,13 +908,13 @@ class ImageManager:
     print(f"Height after z/c: {self._height}")
     self.redraw(recenter=False)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _toggle_text(self, event):
     """Toggle base text display"""
     self._enable_text = not self._enable_text
     self.redraw(recenter=False)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _toggle_zoom(self, event):
     """Advance the zoom method and redraw the image"""
     if self._scale_mode == SCALE_NONE:
@@ -868,14 +926,14 @@ class ImageManager:
     self._input_set_text(f"Scaling set to {self._scale_mode}", select=False)
     self.redraw(recenter=False)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _zoom_out(self, event):
     """Decrease the scale amount by 10%"""
     self._scale_amount -= ZOOM_SCALE_PERCENT
     self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
     self.redraw(recenter=False)
 
-  @blocked_by_input # Tkinter callback
+  @_blocked_by_input # Tkinter callback
   def _zoom_in(self, event):
     """Increase the scale amount by 10%"""
     self._scale_amount += ZOOM_SCALE_PERCENT
