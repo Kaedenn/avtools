@@ -39,9 +39,9 @@ def test_util_format_size():
 def test_util_iterate_from():
   iterate_from = lambda l, i: list(imagemanage.iterate_from(l, i))
   l = list(range(10))
-  assert iterate_from(l, 0) == l[1:] + l[:1]
-  assert iterate_from(l, 1) == l[2:] + l[:2]
-  assert iterate_from(l, len(l)-1) == l
+  assert iterate_from(l, 0) == l[:]
+  assert iterate_from(l, 1) == l[1:] + l[:1]
+  assert iterate_from(l, len(l)) == l
 
 def test_get_images(local_icons):
   images_none = imagemanage.get_images(local_icons)

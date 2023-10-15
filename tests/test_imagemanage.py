@@ -71,9 +71,9 @@ class TestUtilityFunctions(unittest.TestCase):
   def test_iterate_from(self):
     iterate_from = lambda l, i: list(imagemanage.iterate_from(l, i))
     l = list(range(10))
-    self.assertEqual(iterate_from(l, 0), l[1:] + l[:1])
-    self.assertEqual(iterate_from(l, 1), l[2:] + l[:2])
-    self.assertEqual(iterate_from(l, len(l)-1), l)
+    self.assertEqual(iterate_from(l, 0), l)
+    self.assertEqual(iterate_from(l, 1), l[1:] + l[:1])
+    self.assertEqual(iterate_from(l, len(l)), l)
 
   def test_is_image(self):
     self.assertTrue(imagemanage.is_image("foo.png"))
