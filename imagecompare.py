@@ -30,8 +30,18 @@ def _rescale_pixel(r, g, b, a=None):
 class PixelMethod:
   "How do we convert a pixel (RGBa) to a single number?"
 
+  def LinearRGB(r, g, b, a=None):
+    "(r + g + b)/3; ignores alpha"
+    pr, pg, pb, pa = _rescale_pixel(r, g, b, a)
+    return (pr + pg + pb) / 3
+
+  def LinearRGBA(r, g, b, a=None):
+    "(r + g + b + a)/3"
+    pr, pg, pb, pa = _rescale_pixel(r, g, b, a)
+    return (pr + pg + pb + pa) / 3
+
   def QuadraticRGB(r, g, b, a=None):
-    "sqrt(r^2 + g^2 + b^2)"
+    "sqrt(r^2 + g^2 + b^2); ignores alpha"
     pr, pg, pb, pa = _rescale_pixel(r, g, b, a)
     return (pr**2 + pg**2 + pb**2) ** 0.5
 
@@ -56,11 +66,28 @@ class PixelMethod:
     "Value of the alpha channel, or 0 if there is no alpha channel"
     return a if a is not None else 0
 
-  def Hue(r, g, b, a=None): # TODO
+  def Hue(r, g, b, a=None):
     "Pixel's hue, from 0 to 360"
-    return 0
+    rgb = (r, g, b)
+    maxval = max(rgb)
+    minval = min(rgb)
+    delta = maxval - minval
+    if delta == 0:
+      return 0
+    rval, gval, bval = r/255, g/255, b/255
+    dval = max((rval, gval, bval)) - min((rval, gval, bval))
+    sector = 0
+    if maxval == r:
+      sector = ((gval - bval) / dval)
+    if maxval == g:
+      sector = ((bval - rval) / dval) + 2
+    if maxval == b:
+      sector = ((rval - gval) / dval) + 4
+    return int(sector * 60) % 360
 
   values = (
+    ("LinearRGB", LinearRGB),
+    ("LinearRGBA", LinearRGBA),
     ("QuadraticRGB", QuadraticRGB),
     ("QuadraticRGBA", QuadraticRGBA),
     ("Red", Red),
@@ -125,7 +152,7 @@ def maybe_rescale(image1, image2):
 def compare_images(image1, image2,
     pixel_method=PixelMethod.QuadraticRGB,
     value_method=ValueMethod.Trigonometric,
-    threshold=.9,
+    threshold=THRESH_DEFAULT,
     ignore_size=False,
     skip_rescale=False,
     progress=False):
@@ -184,12 +211,11 @@ def compare_images(image1, image2,
 
 def main():
   ap = argparse.ArgumentParser()
-  ap.add_argument("image1", help="path to the first image")
-  ap.add_argument("image2", help="path to the second image")
-  ap.add_argument("--pixel-method",
+  ap.add_argument("images", nargs="+", help="path to images")
+  ap.add_argument("-P", "--pixel-method",
       choices=[method[0] for method in PixelMethod.values], default="QuadraticRGB",
       help="pixel-to-number calculation method (default: %(default)s)")
-  ap.add_argument("--value-method",
+  ap.add_argument("-V", "--value-method",
       choices=[method[0] for method in ValueMethod.values], default="Trigonometric",
       help="value comparison method (default: %(default)s)")
   ap.add_argument("-t", "--threshold", metavar="NUM", type=float,
@@ -206,17 +232,31 @@ def main():
   if args.verbose:
     logger.setLevel(logging.DEBUG)
 
-  image1 = Image.open(args.image1)
-  image2 = Image.open(args.image2)
-  confidence = compare_images(image1, image2,
-      pixel_method=dict(PixelMethod.values)[args.pixel_method],
-      value_method=dict(ValueMethod.values)[args.value_method],
-      threshold=args.threshold,
-      ignore_size=args.ignore_size,
-      skip_rescale=args.skip_rescale,
-      progress=args.progress)
+  image_list = args.images
+  if args.images == ["-"]:
+    image_list = sys.stdin.read().splitlines()
+  if len(image_list) < 2:
+    ap.error("Too few images")
 
-  print(confidence)
+  compare_sets = []
+  images = {image: Image.open(image) for image in image_list}
+  for index, path1 in enumerate(image_list):
+    for path2 in image_list[index+1:]:
+      compare_sets.append((path1, path2))
+  nsets = len(compare_sets)
+
+  for index, image_pair in enumerate(compare_sets):
+    image1, image2 = image_pair
+    logger.info("%d/%d: Comparing %s and %s", index+1, nsets, image1, image2)
+
+    confidence = compare_images(images[image1], images[image2],
+        pixel_method=dict(PixelMethod.values)[args.pixel_method],
+        value_method=dict(ValueMethod.values)[args.value_method],
+        threshold=args.threshold,
+        ignore_size=args.ignore_size,
+        skip_rescale=args.skip_rescale,
+        progress=args.progress)
+    print(confidence, image1, image2)
 
 if __name__ == "__main__":
   main()
