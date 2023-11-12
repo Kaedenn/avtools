@@ -5,6 +5,7 @@ Create or split WebP images
 """
 
 import argparse
+import json
 import logging
 import os
 import string
@@ -83,7 +84,7 @@ def get_webp_info(path):
     "loops": 0,
     "nframes": 0,
     "frames": [],
-    "duration": 0
+    "duration": None
   }
   fheaders = []
   for lkey, lval in webpinfo:
@@ -118,6 +119,8 @@ def get_webp_info(path):
         if fvval.isdigit():
           fvval = int(fvval)
         finfo[fvkey] = fvval
+      if results["duration"] is None:
+        results["duration"] = 0
       results["duration"] += finfo["duration"]
       results["frames"].append(finfo)
     elif lkey == "size of the xmp metadata":
@@ -138,6 +141,11 @@ def load_images(paths):
     else:
       results.append(Image.open(path))
   return results
+
+def image_size(image):
+  "Get the width and height of the image in pixels"
+  isize = image.getbbox()
+  return isize[2], isize[3]
 
 def deduce_mode(paths_in, path_out):
   "Determine what we're doing: creating or extracting WebP image(s)"
@@ -204,11 +212,48 @@ def write_video(images, output_path, size_wxh=None, fps=24, encoder='MP4V'):
 
 def describe_webp_file(path, *args, **kwargs):
   "Display information about a single WebP file"
+  vinfo = get_webp_info(path)
   images = load_images([path])
-  pl = "{} frame{}".format(len(images), "" if len(images) == 1 else "s")
-  print("{}: {}".format(path, pl))
-  isize = images[0].getbbox() # assume all images have the same size
-  print("Size: {}x{}".format(isize[2], isize[3]))
+  if not images:
+    raise ValueError(f"failed to load images from {path}")
+
+  # Determine real image size, ensure vinfo["size"] has it
+  isizes = tuple(set(image_size(image) for image in images))
+  isize = vinfo["size"]
+  if not isizes:
+    logger.warning("Could not get size of %s", path)
+  elif len(isizes) > 1:
+    logger.warning("%s has multiple sizes %r", path, isizes)
+    iwidth = max(isize[0] for isize in isizes)
+    iheight = max(isize[1] for isize in isizes)
+    isize = (iwidth, iheight)
+    logger.warning("%s: using size %s", path, isize)
+  else:
+    isize = isizes[0]
+  if isize != vinfo["size"]:
+    logger.warning("%s: inconsistent image size info=%r split=%r",
+        path, vinfo["size"], isize)
+    vinfo["size"] = (isize[0], isize[1])
+
+  # Determine real frame count; ensure vinfo["nframes"] has it
+  nframes = len(images)
+  if nframes != vinfo["nframes"]:
+    logger.warning("%s inconsistent frame count info=%d split=%d",
+        path, vinfo["nframes"], nframes)
+    vinfo["nframes"] = max(nframes, vinfo["nframes"])
+
+  if kwargs.get("json"):
+    jargs = {}
+    if kwargs.get("indent"):
+      jargs["sort_keys"] = True
+      jargs["indent"] = kwargs["indent"]
+    result = json.dumps(vinfo, **jargs)
+    print(result)
+  else:
+    pl = "{} frame{}".format(len(images), "" if len(images) == 1 else "s")
+    print("{}: {}".format(path, pl))
+    isize = images[0].getbbox() # assume all images have the same size
+    print("Size: {}x{}".format(isize[2], isize[3]))
 
 def describe_webp_files(paths, *args, **kwargs):
   "Display information about WebP files"
@@ -263,7 +308,7 @@ This is done if the output path ends in ".webp".
       help="file containing a list of paths to process, one per line")
   ap.add_argument("-o", "--output", metavar="PATH",
       help="destination path (see below for usage)")
-  ag = ap.add_argument_group()
+  ag = ap.add_argument_group("mode")
   mg = ag.add_mutually_exclusive_group()
   mg.add_argument("-m", "--mode",
       choices=(MODE_DESCRIBE, MODE_CREATE, MODE_EXTRACT),
@@ -274,6 +319,11 @@ This is done if the output path ends in ".webp".
       dest="mode", const=MODE_CREATE, help="Shorthand for --mode=%(const)s")
   mg.add_argument("-e", "--extract", action="store_const",
       dest="mode", const=MODE_EXTRACT, help="Shorthand for --mode=%(const)s")
+  ag = ap.add_argument_group("output")
+  ag.add_argument("-j", "--json", action="store_true",
+      help="format output as JSON")
+  ag.add_argument("--indent", type=int,
+      help="indent JSON with %(metavar)s spaces")
   ag = ap.add_argument_group("diagnostics")
   mg = ag.add_mutually_exclusive_group()
   mg.add_argument("-q", "--quiet", action="store_true",
@@ -301,28 +351,28 @@ This is done if the output path ends in ".webp".
     mode = deduce_mode(paths, args.output)
 
   if mode == MODE_DESCRIBE:
-    describe_webp_files(paths)
-    for path in paths:
-      vinfo = get_webp_info(path)
-      logger.debug(vinfo)
-      print("Features: {}".format(" ".join(vinfo["features"])))
-      print("Background: {:08x}".format(vinfo["bgcolor"]))
-      nloops = "infinite" if vinfo["loops"] == 0 else str(vinfo["loops"])
-      print("Loops: {}".format(nloops))
-      if vinfo["duration"] > 0:
-        fps = len(vinfo["frames"]) / (vinfo["duration"] / 1000)
-        print("Duration: {}ms (~{:.02f}fps)".format(vinfo["duration"], fps))
-      else:
-        print("Duration: unknown")
-      print("Frames: {}".format(len(vinfo["frames"])))
-      for frame in vinfo["frames"]:
-        print(("  {num:3d} {width}x{height}"
-               " alpha={alpha:3s}"
-               " offset=({x_offset},{y_offset})"
-               " {duration:3d}ms"
-               " blend={blend:3s}"
-               " {image_size}b"
-               " {compression}").format(**frame))
+    describe_webp_files(paths, json=args.json, indent=args.indent)
+    # for path in paths:
+    #   vinfo = get_webp_info(path)
+    #   logger.debug(vinfo)
+    #   print("Features: {}".format(" ".join(vinfo["features"])))
+    #   print("Background: {:08x}".format(vinfo["bgcolor"]))
+    #   nloops = "infinite" if vinfo["loops"] == 0 else str(vinfo["loops"])
+    #   print("Loops: {}".format(nloops))
+    #   if vinfo["duration"] is not None and vinfo["duration"] > 0:
+    #     fps = len(vinfo["frames"]) / (vinfo["duration"] / 1000)
+    #     print("Duration: {}ms (~{:.02f}fps)".format(vinfo["duration"], fps))
+    #   else:
+    #     print("Duration: unknown")
+    #   print("Frames: {}".format(len(vinfo["frames"])))
+    #   for frame in vinfo["frames"]:
+    #     print(("  {num:3d} {width}x{height}"
+    #            " alpha={alpha:3s}"
+    #            " offset=({x_offset},{y_offset})"
+    #            " {duration:3d}ms"
+    #            " blend={blend:3s}"
+    #            " {image_size}b"
+    #            " {compression}").format(**frame))
   elif mode == MODE_CREATE:
     images = load_images(paths)
     opath = deduce_create_output(args.output)
