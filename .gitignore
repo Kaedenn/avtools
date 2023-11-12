@@ -1,6 +1,10 @@
 # Untracked folders
 ref/
 
+# Assets that cannot be distributed
+tests/icons
+tests/*.svg
+
 # Protected files
 .envrc
 
