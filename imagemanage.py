@@ -18,17 +18,11 @@ A user can certainly create a mark action to do such a thing, however.
 
 # TODO: README
 # TODO: Draw text on its own buffer
-# TODO: Implement the arbitrary keybind commands (self._on_keypress)
 # TODO: Support webm, webp
 # TODO: Support XPM (PIL breaks on images >1bpp)
-# TODO: Calculate fullscreen size instead of hard-coding offset adjustments
-# TODO: Allow for using different resampling methods for image scaling:
-#   PIL.Image.NEAREST   nearest neighbor; simple scaling
-#   PIL.Image.BILINEAR  linear interpolation
-#   PIL.Image.BICUBIC   cubic interpolation
-#   PIL.Image.LANCZOS   high-quality downsampling
 # TODO: Allow zoom adjustments (_ and +) to affect other scale modes
-# TODO: Remove self._handle_command; move code into self._do_input_command
+
+# FIXME: Calculate the screen height adjustment instead of hard-coding it
 
 import argparse
 import collections
@@ -45,8 +39,10 @@ import subprocess
 from subprocess import Popen, PIPE
 import sys
 import textwrap
+import time
 import tkinter as tk
 import tkinter.font as tkfont
+
 from PIL import Image, ImageTk
 try:
   import cairosvg
@@ -55,27 +51,28 @@ except ImportError:
   sys.stderr.write("cairosvg not found, svg support disabled\n")
   HAVE_CAIRO_SVG = False
 
-LOGGING_FORMAT = "%(filename)s:%(lineno)s:%(levelname)s: %(message)s"
-
 class Logger(logging.Logger):
+  "Logger with a TRACE level"
   TRACE = 5
+  FORMAT = "%(filename)s:%(lineno)s:%(levelname)s: %(message)s"
   def trace(self, message, *args, **kwargs):
-    super().log(Logger.TRACE, message, *args, **kwargs, stacklevel=2)
+    "Log a trace-level message"
+    self.log(Logger.TRACE, message, *args, **kwargs, stacklevel=2)
 
 logging.addLevelName(Logger.TRACE, "TRACE")
 logging.setLoggerClass(Logger)
-logging.basicConfig(format=LOGGING_FORMAT, level=logging.INFO)
+logging.basicConfig(format=Logger.FORMAT, level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-ASSET_PATH = "assets"
-FONT = "monospace"
-FONT_SIZE = 10
+ASSET_PATH = "assets"   # directory containing additional assets (icon)
+FONT = "monospace"      # default font
+FONT_SIZE = 10          # default font size in points
 
-SORT_NONE = "none" # unordered
-SORT_RAND = "rand" # randomized
-SORT_NAME = "name" # ascending
-SORT_TIME = "time" # oldest first
-SORT_SIZE = "size" # smallest first
+SORT_NONE = "none"      # unordered
+SORT_RAND = "rand"      # randomized
+SORT_NAME = "name"      # ascending
+SORT_TIME = "time"      # oldest first
+SORT_SIZE = "size"      # smallest first
 SORT_RNAME = "r" + SORT_NAME # descending
 SORT_RTIME = "r" + SORT_TIME # newest first
 SORT_RSIZE = "r" + SORT_SIZE # largest first
@@ -85,10 +82,10 @@ SORT_MODES = (
   SORT_TIME, SORT_RTIME,
   SORT_SIZE, SORT_RSIZE)
 
-SCALE_NONE = "none"
-SCALE_SHRINK = "shrink"
-SCALE_EXACT = "exact"
-ZOOM_SCALE_PERCENT = 10   # Amount to scale the image using _ or +
+SCALE_NONE = "none"     # leave images as they are
+SCALE_SHRINK = "shrink" # display the entire image
+SCALE_EXACT = "exact"   # resize the image to fill the canvas
+ZOOM_SCALE_PERCENT = 10 # Amount to scale the image using _ or +
 
 MODE_NONE = "none"
 MODE_RENAME = "rename"
@@ -99,13 +96,13 @@ MODE_PREV_SOME = "prev-some"
 MODE_LABEL = "label"
 MODE_COMMAND = "command"
 
-LINE_FORMAT = "{} {}\n"
+LINE_FORMAT = "{} {}\n" # default format of the program output
 
-INPUT_START_WIDTH = 20
-SCREEN_WIDTH_ADJUST = 0
-SCREEN_HEIGHT_ADJUST = 100 # TODO: Somehow determine at runtime
+INPUT_START_WIDTH = 20  # starting with of the input text box
+SCREEN_WIDTH_ADJ = 0    # pixels to subtract from window width
+SCREEN_HEIGHT_ADJ = 100 # pixels to subtract from window height (see FIXME)
 
-PADDING = 2
+PADDING = 2             # padding around the input text box
 
 # Constants affecting text formatting
 TF_INCREMENTAL = "incremental"
@@ -118,6 +115,21 @@ TF_FONT = "family"
 TF_COLOR = "color"
 TF_FGCOLOR = "fgcolor"
 TF_BGCOLOR = "bgcolor"
+
+# Extra commands that can be specified via the input box
+CMD_DELAY = ("delay",)
+CMD_FPS = ("fps", "rate")
+CMD_INSPECT = ("i", "inspect")
+CMD_SAMPLE = ("s", "sample")
+CMD_ACTIONS = ("actions", "dump")
+CMD_HELP = ("h", "help")
+COMMANDS = {
+  "delay": CMD_DELAY,
+  "fps": CMD_FPS,
+  "inspect": CMD_INSPECT,
+  "sample": CMD_SAMPLE,
+  "help": CMD_HELP
+}
 
 # Resample methods for scaling images
 SAMPLE_METHODS = {
@@ -137,41 +149,44 @@ Key actions:
   <Right>     Go to the next image
   <Up>        Go to the 10th next image
   <Down>      Go to the 10th previous image
-  <Greater>   Advance an arbitrary number of images forward
-  <Less>      Advance an arbitrary number of images backward
+  <Greater>   Go to the Nth next image, where N is specified via input
+  <Less>      Go to the Nth previous image, where N is specified via input
   <Shift-r>   Mark the current image for rename (<Escape> to cancel)
   <Shift-d>   Mark the current image for deletion
   <Shift-f>   Search for the next image with filename starting with text
   <Shift-g>   Go to the numbered image (starting at 1)
-  <Equal>     Toggle downscaling of images to fit the screen
   <1>..<9>    Mark current image for later examination
-  <Ctrl-w>    Exit the application
-  <Ctrl-q>    Exit the application
-  <Escape>    Cancel input or exit the application
   <t>         Toggle displaying text
   <z>, <c>    Adjust canvas size slightly (debugging)
   <l>         "Label" an image, used to take "notes" when viewing images
-  <h>         Display this message
+  <Equal>     Toggle downscaling of images to fit the screen
   <_>         (<Shift-hyphen>) when zoom mode is none, decrease size by 10%
   <+>         (<Shift-equal>) when zoom mode is none, increase size by 10%
+  <Escape>    Cancel input or exit the application
+  <Ctrl-w>    Exit the application
+  <Ctrl-q>    Exit the application
+  <h>         Display this message
 """
 
-def pipe_program(command, lines):
+def exec_program(command, input_lines=()):
   """
-  Pipe the lines to the command. Returns output as a list of lines.
-  """
-  inputs = []
-  if isinstance(lines, str):
-    inputs.append(lines)
-  else:
-    inputs.extend(lines)
-  logger.debug("exec %r with %d inputs", command, len(inputs))
+  Invoke an operating system command and write to it the lines given
 
-  cmd_args = shlex.split(command)
-  proc = Popen(cmd_args, stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
-  cmd_input = os.linesep.join(inputs).encode()
-  out_data, _ = proc.communicate(input=cmd_input)
-  return out_data.decode().splitlines()
+  Returns a list of lines from the program's stdout. The program's stderr is
+  forwarded to the terminal.
+  """
+  lines = []
+  if isinstance(input_lines, str):
+    lines.extend(input_lines.splitlines())
+  else:
+    lines.extend(input_lines)
+  logger.debug("exec %r with %d inputs", command, len(lines))
+  logger.trace("inputs: %r", lines)
+  args = shlex.split(command)
+  proc = Popen(args, stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
+  text_input = os.linesep.join(lines).encode()
+  output, _ = proc.communicate(input=text_input)
+  return output.decode().splitlines()
 
 def get_asset_path(name):
   """Get the file path to the named asset"""
@@ -217,34 +232,32 @@ def iterate_from(item_list, start_index):
   yield from item_list[start_index:]
   yield from item_list[:start_index]
 
-def is_image(filepath):
-  """True if the string looks like it refers to an image file"""
+def get_mime_type(filepath):
+  """Get the mimetype of the file as a pair (mimecat, mimevalue)"""
   mtype = mimetypes.guess_type(filepath)[0]
   if mtype is not None:
-    mcat = mtype.split("/")[0]
-    if mcat == "image":
-      return True
-  return False
+    mcat, mval = mtype.split("/")
+    return mcat, mval
+  return None, None
+
+def is_image(filepath):
+  """True if the string looks like it refers to an image file"""
+  return get_mime_type(filepath)[0] == "image"
 
 def is_svg(filepath):
   """True if the path refers to an SVG file"""
-  mtype = mimetypes.guess_type(filepath)[0]
-  if mtype is not None:
-    mcat, mval = mtype.split("/", 1)
-    if mcat == "image" and "svg" in mval:
-      return True
-  return False
+  return get_mime_type(filepath) == ("image", "svg")
 
 def open_image(filepath):
   """Open the image and return a PIL Image object"""
   try:
     filearg = filepath
-    if is_svg(filepath):
-      if HAVE_CAIRO_SVG:
-        filearg = io.BytesIO(cairosvg.svg2png(url=filepath))
+    if is_svg(filepath) and HAVE_CAIRO_SVG:
+      # Rasterize the SVG and wrap it in a binary stream
+      filearg = io.BytesIO(cairosvg.svg2png(url=filepath))
     return Image.open(filearg)
-  except IOError as e:
-    logger.error("Failed opening image %r: %s", filepath, e)
+  except IOError as err:
+    logger.error("Failed opening image %r: %s", filepath, err)
   return None
 
 def _parse_format_token(token):
@@ -356,7 +369,7 @@ def parse_formatted_text(text, incremental=False):
         rule = {}
   return results
 
-def _blocked_by_input(func):
+def _blocked_by_input(func): # decorator-generator
   """Restrict a function from being called if self._input has focus"""
   @functools.wraps(func)
   def wrapper(self, *args, **kwargs):
@@ -436,9 +449,9 @@ class ImageManager:
 
     # Configuration before widget construction: root geometry
     if width is None:
-      width = root.winfo_screenwidth() - SCREEN_WIDTH_ADJUST
+      width = root.winfo_screenwidth() - SCREEN_WIDTH_ADJ
     if height is None:
-      height = root.winfo_screenheight() - SCREEN_HEIGHT_ADJUST
+      height = root.winfo_screenheight() - SCREEN_HEIGHT_ADJ
     self._width = width
     self._height = height
     root.geometry(f"{self._width}x{self._height}")
@@ -454,10 +467,11 @@ class ImageManager:
     self._drag_start = [0, 0]     # Where the dragging started
 
     # Default font and the font cache
-    self._font = tkfont.Font(family=font_family, size=font_size)
     self._font_family = font_family
     self._font_size = font_size
     self._font_cache = {}
+    self._font = None
+    self._font = self._get_font(bold=False)
 
     # Create root window
     frame = tk.Frame(root)
@@ -506,9 +520,11 @@ class ImageManager:
     self._real_width = 0        # Image's on-disk width
     self._real_height = 0       # Image's on-disk height
 
+    self._commands = {}
     self._keybinds = collections.defaultdict(list)
     self._actions = collections.defaultdict(list)
-    self._functions = {}
+    self._functions = collections.defaultdict(list)
+    self._mark_functions = {}
 
     self._root.after(self._frame_delay, lambda *_: self._on_frame_tick())
 
@@ -526,9 +542,13 @@ class ImageManager:
     """Write mark actions to the given path"""
     self._output.append({"path": path, "line_format": lformat})
 
-  def add_mark_function(self, cbfunc, key):
+  def add_mark_function(self, key, cbfunc):
     """Add callback function for when mark key (1..9) is pressed"""
-    self._functions[key] = cbfunc
+    self._mark_functions[key] = cbfunc
+
+  def add_key_function(self, key, cbfunc):
+    """Add a callback function when any key is pressed"""
+    self._functions[key].append(cbfunc)
 
   def add_keybind(self, key, command):
     """Bind a key to run a shell command"""
@@ -537,6 +557,17 @@ class ImageManager:
   def add_text_function(self, func):
     """Call func(path) and display the result on the image"""
     self._text_functions.append(func)
+
+  def register_command(self, command, func):
+    """
+    Add a command that can be typed in the input box
+
+    func is called with the following arguments:
+      command
+      arguments (as a string)
+      current image path
+    """
+    self._commands[command] = func
 
   def actions(self):
     """Return the current actions"""
@@ -715,20 +746,19 @@ class ImageManager:
       family=None):     # Use custom font face (None -> self._font_family)
     """Obtain a font object and cache it for future use"""
     font = self._font
-    if bold or italic or size or family:
-      cache_key = (bold, italic, size, family)
-      if cache_key not in self._font_cache:
-        ffamily = self._font_family if family is None else family
-        fsize = self._font_size if size is None else size
-        font = tkfont.Font(
-            weight=tkfont.BOLD if bold else tkfont.NORMAL,
-            slant=tkfont.ITALIC if italic else tkfont.ROMAN,
-            family=ffamily,
-            size=fsize)
-        self._font_cache[cache_key] = font
-        logger.debug("Cached font %r as %r", font.actual(), cache_key)
-      else:
-        font = self._font_cache[cache_key]
+    cache_key = (bold, italic, size, family)
+    if cache_key not in self._font_cache:
+      ffamily = self._font_family if family is None else family
+      fsize = self._font_size if size is None else size
+      font = tkfont.Font(
+          weight=tkfont.BOLD if bold else tkfont.NORMAL,
+          slant=tkfont.ITALIC if italic else tkfont.ROMAN,
+          family=ffamily,
+          size=fsize)
+      self._font_cache[cache_key] = font
+      logger.debug("Cached font %r as %r", font.actual(), cache_key)
+    else:
+      font = self._font_cache[cache_key]
     return font
 
   def _draw_text_lines(self, lines, pos=(0, 0), incremental=False, **kwargs):
@@ -781,9 +811,9 @@ class ImageManager:
       stat = os.stat(path)
       size = format_size(stat.st_size)
       text_lines.append(f"Size: {size}; {realw}x{realh}px")
-      imgw, imgh = self._image.size
-      if (imgw, imgh) != (realw, realh):
-        text_lines.append(f"Resized to {imgw}x{imgh}px")
+      #imgw, imgh = self._image.size
+      #if (imgw, imgh) != (realw, realh):
+      #  text_lines.append(f"Resized to {imgw}x{imgh}px")
 
       tstamp = format_timestamp(stat.st_mtime, "%Y/%m/%d %H:%M:%S")
       text_lines.append(f"Time: {tstamp}")
@@ -836,59 +866,6 @@ class ImageManager:
         return image_path
     return None
 
-  def _handle_command(self, command):
-    """Handle a command entered via the input box"""
-    cmd_and_args = command.split(None, 1)
-    cmd, args = command, ""
-    if len(cmd_and_args) == 2:
-      cmd, args = cmd_and_args
-    logger.info("Handling command %r (args %r)", cmd, args)
-    if cmd in ("delay",):
-      try:
-        self._frame_delay = int(args)
-      except ValueError as err:
-        self._input_set_text(f"Error: {err}", select=False)
-      logger.info("Configured frame delay to %d (%f fps)",
-          self._frame_delay, 1000/self._frame_delay)
-    elif cmd in ("fps", "rate"):
-      try:
-        self._frame_delay = 1000 // int(args)
-      except ValueError as err:
-        self._input_set_text(f"Error: {err}", select=False)
-      logger.info("Configured frame delay to %d (%f fps)",
-          self._frame_delay, 1000/self._frame_delay)
-    elif cmd in ("i", "inspect"):
-      canvw, canvh = self.canvas_size()
-      logger.info("Root WxH: %sx%s", self._width, self._height)
-      logger.info("Canvas WxH: %sx%s", canvw, canvh)
-      logger.info("Input width=%s", self._input_width)
-      if self._image is not None:
-        logger.info("Image size: %s", self._image.size)
-      else:
-        logger.info("No image displayed")
-    elif cmd in ("sample",):
-      alg_name = args
-      while SAMPLE_METHODS.get(alg_name) in SAMPLE_METHODS:
-        alg_name = SAMPLE_METHODS[alg_name]
-      algorithm = SAMPLE_METHODS.get(alg_name)
-      if algorithm is None:
-        logger.error("Invalid sampling algorithm %r; using NEAREST", alg_name)
-        logger.error("Choices: %s", " ".join(SAMPLE_METHODS))
-        algorithm = Image.NEAREST
-      self._sample_method = algorithm
-      self._input_set_text(f"Resample method set to {alg_name}", select=False)
-    elif cmd in ("h", "help"):
-      self._show_help(None)
-      logger.info("Commands:")
-      logger.info("delay <MS> - set playback to <MS> milliseconds per frame")
-      logger.info("fps|rate <NUM> - set playback to <NUM> frames per second")
-      logger.info("i|inspect - inspect the canvas and input sizes")
-      logger.info("sample <STR> - set resize sample method to <STR>")
-      logger.info("Choices: %s", " ".join(SAMPLE_METHODS))
-      logger.info("h|help - display this message and show the help text")
-    else:
-      self._input_set_text(f"Invalid command {command!r}", select=False)
-
   def _is_animated(self):
     """True if self._image is an animated image"""
     try:
@@ -926,7 +903,19 @@ class ImageManager:
       for command in self._keybinds[event.keysym]:
         cmd = command.format(**format_keys)
         logger.debug("Invoking %r", cmd)
-        # TODO: Handle the command, if any
+        lines = exec_program(cmd)
+        if lines:
+          logger.info("Program %s wrote %d lines", cmd, len(lines))
+          for lnr, line in enumerate(lines):
+            logger.info("%d:%s", lnr, line)
+
+    if event.char in self._functions:
+      for func in self._functions[event.char]:
+        logger.trace("Event %s calls %s with %s", event, func, self.path())
+        result = func(self.path())
+        if result is not None:
+          logger.info("Keypress %r gave %r", event.char, result)
+
     self._canvas_clear_temp()
 
   # Tkinter callback
@@ -1033,8 +1022,8 @@ class ImageManager:
   @_blocked_by_input # Tkinter callback
   def _mark_image(self, event):
     """Mark an image for later examination"""
-    if event.char in self._functions:
-      self._functions[event.char](self.path())
+    if event.char in self._mark_functions:
+      self._mark_functions[event.char](self.path())
     self._action((f"MARK-{event.char}",))
 
   @_blocked_by_input # Tkinter callback
@@ -1145,9 +1134,9 @@ class ImageManager:
       idx = (int(value) - 1) % self._count
       logger.info("Navigating to image number %d", idx)
       self.set_index(idx)
-    except ValueError as e:
-      logger.error(e)
-      self._input_set_text(f"Error: {e}", select=False)
+    except ValueError as err:
+      logger.error(err)
+      self._input_set_text(f"Error: {err}", select=False)
 
   def _do_input_advance_many(self, value, negative=False):
     """Handle the advance-by-number inputs"""
@@ -1158,58 +1147,109 @@ class ImageManager:
       index = (self._index + delta) % self._count
       logger.info("Navigating to image number %d", index)
       self.set_index(index)
-    except ValueError as e:
-      logger.error(e)
-      self._input_set_text(f"Error: {e}", select=False)
+    except ValueError as err:
+      logger.error(err)
+      self._input_set_text(f"Error: {err}", select=False)
 
   def _do_input_label(self, value):
     """Handle the label input"""
     logger.debug("Assigning label %r to %s", value, self.path())
     self._action(("LABEL", value))
 
-  def _do_input_command(self, value):
-    """Handle the arbitrary command input"""
-    logger.info("Executing command %r", value)
-    self._handle_command(value)
+  def _do_input_command(self, command):
+    """Handle a command entered via the input box"""
+    logger.info("Executing command %r", command)
+    cmd_and_args = command.split(None, 1)
+    cmd, args = command, ""
+    if len(cmd_and_args) == 2:
+      cmd, args = cmd_and_args
+    logger.info("Handling command %r (args %r)", cmd, args)
+    handled = False
+    if cmd in self._commands:
+      self._commands[cmd](cmd, args, self.path())
+      handled = True
+
+    if cmd in CMD_DELAY:
+      try:
+        self._frame_delay = int(args)
+      except ValueError as err:
+        self._input_set_text(f"Error: {err}", select=False)
+      logger.info("Configured frame delay to %d (%f fps)",
+          self._frame_delay, 1000/self._frame_delay)
+    elif cmd in CMD_FPS:
+      try:
+        self._frame_delay = 1000 // int(args)
+      except ValueError as err:
+        self._input_set_text(f"Error: {err}", select=False)
+      logger.info("Configured frame delay to %d (%f fps)",
+          self._frame_delay, 1000/self._frame_delay)
+    elif cmd in CMD_INSPECT:
+      canvw, canvh = self.canvas_size()
+      logger.info("Root WxH: %sx%s", self._width, self._height)
+      logger.info("Canvas WxH: %sx%s", canvw, canvh)
+      logger.info("Input width=%s", self._input_width)
+      if self._image is not None:
+        logger.info("Image size: %s", self._image.size)
+      else:
+        logger.info("No image displayed")
+    elif cmd in CMD_SAMPLE:
+      alg_name = args
+      while SAMPLE_METHODS.get(alg_name) in SAMPLE_METHODS:
+        alg_name = SAMPLE_METHODS[alg_name]
+      algorithm = SAMPLE_METHODS.get(alg_name)
+      if algorithm is None:
+        logger.error("Invalid sampling algorithm %r; using NEAREST", alg_name)
+        logger.error("Choices: %s", " ".join(SAMPLE_METHODS))
+        algorithm = Image.NEAREST
+      self._sample_method = algorithm
+      self._input_set_text(f"Resample method set to {alg_name}", select=False)
+    elif cmd in CMD_ACTIONS:
+      print(self._actions) # TODO: write to a file
+    elif cmd in CMD_HELP:
+      self._show_help(None)
+      logger.info("Commands:")
+      logger.info("delay <MS> - set playback to <MS> milliseconds per frame")
+      logger.info("fps|rate <NUM> - set playback to <NUM> frames per second")
+      logger.info("i|inspect - inspect the canvas and input sizes")
+      logger.info("sample <STR> - set resize sample method to <STR>")
+      logger.info("Choices: %s", " ".join(SAMPLE_METHODS))
+      logger.info("actions|dump [PATH] - dump actions to stdout or a file")
+      logger.info("h|help - display this message and show the help text")
+    elif not handled:
+      self._input_set_text(f"Invalid command {command!r}", select=False)
 
   # Tkinter callback
   def _input_enter(self, *args):
     """Called when user presses Enter/Return on the Entry"""
     logger.trace("_input_enter: %s", args)
     value = self._input.get()
-    self._input.delete(0, len(value))
+    self._input.delete(0, len(self._input.get()))
     self._gutter.focus()
     self.hide_input()
     self._last_input = value
-    if self._input_mode == MODE_RENAME:
-      # Rename the current image to <value>
+    mode = self._input_mode
+    self._input_mode = MODE_NONE
+    if mode == MODE_RENAME:         # Rename the current image to <value>
       self._do_input_rename(value)
       self._next_image(*args)
-    elif self._input_mode == MODE_GOTO:
-      # Find and display the next image starting with <value>
+    elif mode == MODE_GOTO:         # Search for and go to the image <value>
       self._do_input_goto(value)
-    elif self._input_mode == MODE_SET_IMAGE:
-      # Navigate to the numbered image
+    elif mode == MODE_SET_IMAGE:    # Navigate to the Nth image
       self._do_input_set_image(value)
-    elif self._input_mode == MODE_NEXT_SOME:
-      # Navigate to the Nth next image
+    elif mode == MODE_NEXT_SOME:    # Navigate to the Nth next image
       self._do_input_advance_many(value)
-    elif self._input_mode == MODE_PREV_SOME:
-      # Navigate to the Nth previous image
+    elif mode == MODE_PREV_SOME:    # Navigate to the Nth previous image
       self._do_input_advance_many(value, negative=True)
-    elif self._input_mode == MODE_LABEL:
-      # Assign a label to the image
+    elif mode == MODE_LABEL:        # Assign a label to the image
       self._do_input_label(value)
-    elif self._input_mode == MODE_COMMAND:
-      # Execute an arbitrary command
+    elif mode == MODE_COMMAND:      # Execute an arbitrary command
       self._do_input_command(value)
-    elif self._input_mode == MODE_NONE:
+    elif mode == MODE_NONE:
       logger.warning("Received input %r args %r without mode",
           value, args)
     else:
       logger.error("Internal error: invalid mode %s; value=%r args=%r",
-          self._input_mode, value, args)
-    self._input_mode = MODE_NONE
+          mode, value, args)
 
 def get_images(*paths, recursive=False, quick=False, cont_on_error=False):
   """Return a list of all images found in the given paths"""
@@ -1242,10 +1282,10 @@ def get_images(*paths, recursive=False, quick=False, cont_on_error=False):
       try:
         open_image(image)
         filtered_images.append(image)
-      except (IOError, ValueError) as e:
+      except (IOError, ValueError) as err:
         logger.error("Failed to open image %d %r", idx, image)
         logger.error("Original exception below:")
-        logger.exception(e)
+        logger.exception(err)
     images = filtered_images
   else:
     logger.info("Skipping precheck of %d image(s)", len(images))
@@ -1254,14 +1294,17 @@ def get_images(*paths, recursive=False, quick=False, cont_on_error=False):
 
 def build_mark_write_function(path):
   """Create a mark function to write an image to `path`"""
-  mode = "a+t" if os.path.isfile(path) else "wt"
-  logger.debug("Building mark function for %r mode %s", path, mode)
+  logger.debug("Building mark function for %r", path)
+
   def mark_func(image_path):
     """Mark function: write image path to the path given"""
+    mode = "a+t" if os.path.isfile(path) else "wt"
+    logger.trace("open(%r, %r) to write %r", path, mode, image_path)
     with open(path, mode) as fobj:
       fobj.write(image_path)
       fobj.write(os.linesep)
       fobj.close()
+
   return mark_func
 
 def build_text_function(program_string):
@@ -1271,6 +1314,7 @@ def build_text_function(program_string):
   if prog.startswith("|"):
     pipe = True
     prog = prog[1:]
+
   def text_func(path):
     """Execute a program and return the output"""
     args = shlex.split(prog)
@@ -1290,6 +1334,7 @@ def build_text_function(program_string):
       logger.warning("Program %r wrote to stderr:", cmd)
       logger.warning(err.decode().rstrip())
     return out.decode()
+
   return text_func
 
 def _parse_sort_arg(sort_arg, reverse):
@@ -1429,6 +1474,8 @@ def main():
       help="write current image path to %(metavar)s on MARK-2")
   ag.add_argument("--bind", action="append", metavar="KEY CMD", nargs=2,
       help="bind a keypress to invoke a shell command")
+  ag.add_argument("--write-mark", action="append", metavar="NUMBER PATH",
+      nargs=2, help="write current image path to <PATH> on MARK-<NUMBER>")
 
   ag = ap.add_argument_group("sorting")
   mg = ag.add_mutually_exclusive_group()
@@ -1502,20 +1549,18 @@ def main():
 
   # Sort the list of files
   if args.sort_via:
-    images = pipe_program(args.sort_via, images)
+    images = exec_program(args.sort_via, images)
   else:
-    # Deduce sorting mode and function
     sort_mode, sort_func, sort_rev = _parse_sort_arg(args.sort, args.reverse)
-
-    # Sort the images by the deduced sorting method
     if sort_mode == SORT_RAND:
       logger.debug("Shuffling images")
-      if args.seed:
-        rand = random.Random()
-        rand.seed(args.seed)
-        rand.shuffle(images)
-      else:
-        random.shuffle(images)
+      seed = args.seed
+      if seed is None:
+        seed = int(time.time())
+        logger.info("Using random seed %s", seed)
+      rand = random.Random()
+      rand.seed(seed)
+      rand.shuffle(images)
     elif sort_mode != SORT_NONE:
       logger.debug("Sorting by %s (reverse=%s)", sort_mode, sort_rev)
       images.sort(key=sort_func)
@@ -1544,8 +1589,12 @@ def main():
     logger.info("Icon %s not found; not using an icon", icon)
     icon = None
 
-  manager = ImageManager(images, width=iwidth, height=iheight,
-      show_text=args.add_text, icon=icon, **mkwargs)
+  manager = ImageManager(images,
+      width=iwidth,
+      height=iheight,
+      show_text=args.add_text,
+      icon=icon,
+      **mkwargs)
 
   # Register output file, if given
   if args.out is not None:
@@ -1557,12 +1606,16 @@ def main():
 
   # Register functions to call when a mark key is pressed
   if args.write1:
-    manager.add_mark_function(build_mark_write_function(args.write1), '1')
+    manager.add_mark_function('1', build_mark_write_function(args.write1))
   if args.write2:
-    manager.add_mark_function(build_mark_write_function(args.write2), '2')
+    manager.add_mark_function('2', build_mark_write_function(args.write2))
   if args.bind:
     for bindkey, bindcmd in args.bind:
       manager.add_keybind(bindkey, bindcmd)
+  if args.write_mark:
+    for mark_nr, path in args.write_mark:
+      logger.debug("Writing images to %r on MARK-%s", path, mark_nr)
+      manager.add_key_function(mark_nr, build_mark_write_function(path))
 
   # Register text function(s)
   if args.add_text_from is not None:
@@ -1589,6 +1642,8 @@ def main():
           row.append(path)
           row.extend(action[1:])
           writer.writerow(row)
+  else:
+    logger.info("Manager ready: manager.root.mainloop() to begin loop")
 
 if __name__ == "__main__":
   main()
