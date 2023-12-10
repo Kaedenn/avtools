@@ -162,9 +162,11 @@ Key actions:
   <Equal>     Toggle downscaling of images to fit the screen
   <_>         (<Shift-hyphen>) when zoom mode is none, decrease size by 10%
   <+>         (<Shift-equal>) when zoom mode is none, increase size by 10%
+  <Space>     Toggle play/pause for animated images (GIFs, MJPEGs)
   <Escape>    Cancel input or exit the application
   <Ctrl-w>    Exit the application
   <Ctrl-q>    Exit the application
+  <Alt-m>     Toggle menu bar
   <h>         Display this message
 """
 
@@ -437,6 +439,7 @@ class ImageManager:
     root.bind_all("<Key-plus>", self._zoom_in)
     root.bind_all("<Key-underscore>", self._zoom_out)
     root.bind_all("<Key-space>", self._play_pause)
+    root.bind_all("<Alt-Key-m>", self._toggle_menu)
     root.bind_all("<Key>", self._on_keypress)
     root.bind_all("<ButtonPress-1>", self._on_mouse_press)
     root.bind_all("<B1-Motion>", self._on_mouse_pan)
@@ -477,6 +480,24 @@ class ImageManager:
     frame = tk.Frame(root)
     frame.grid(row=0, column=0)
     self._frame = frame
+
+    # Create menu bar (hidden by default)
+    self._menu_visible = False
+    self._null_menu = tk.Menu(root) # Used to hide the menu bar
+    self._menu = tk.Menu(root)
+    menu_file = tk.Menu(self._menu, tearoff=0)
+    menu_file.add_command(label="Exit", command=root.quit)
+    self._menu.add_cascade(label="File", menu=menu_file)
+    menu_view = tk.Menu(self._menu, tearoff=0)
+    menu_view.add_command(label="Reset Image",
+        command=lambda: self.redraw(recenter=True))
+    menu_view.add_command(label="Toggle Text", command=self._toggle_text)
+    menu_view.add_command(label="Hide Menu", command=self._toggle_menu)
+    self._menu.add_cascade(label="View", menu=menu_view)
+    menu_help = tk.Menu(self._menu, tearoff=0)
+    menu_help.add_command(label="Keys", command=self._show_help)
+    self._menu.add_cascade(label="Help", menu=menu_help)
+    #self._root.config(menu=self._menu)
 
     # Create gutter input (used as a focus sink; not visible)
     self._gutter = tk.Entry(frame)
@@ -884,6 +905,13 @@ class ImageManager:
         self.redraw(skip_text=True)
     self._root.after(self._frame_delay, lambda *_: self._on_frame_tick())
 
+  @_blocked_by_input # Tkinter callback
+  def _toggle_menu(self, event=None):
+    """Toggle the appearance of the menu bar"""
+    self._menu_visible = not self._menu_visible
+    new_menu = self._menu if self._menu_visible else self._null_menu
+    self._root.config(menu=new_menu)
+
   # Tkinter callback
   def _on_keypress(self, event):
     """Called when any key is pressed"""
@@ -922,28 +950,41 @@ class ImageManager:
   def _on_mouse_press(self, event):
     """Called when the left mouse button is pressed"""
     logger.trace("Press %s", event)
-    self._drag_start = [event.x, event.y]
-    self._hold_offset[0] = self._center_offset[0]
-    self._hold_offset[1] = self._center_offset[1]
+    image_w, image_h = self._image.size
+    center_x = self._width/2 + self._center_offset[0]
+    center_y = self._height/2 + self._center_offset[1]
+    image_x = center_x - image_w/2
+    image_y = center_y - image_h/2
+    image_x2 = center_x + image_w/2
+    image_y2 = center_y + image_h/2
+    self._drag_start = [-1, -1]
+    # Only begin dragging if we clicked on the image
+    if image_x < event.x < image_x2:
+      if image_y < event.y < image_y2:
+        self._drag_start = [event.x, event.y]
+        self._hold_offset[0] = self._center_offset[0]
+        self._hold_offset[1] = self._center_offset[1]
 
   # Tkinter callback
   def _on_mouse_pan(self, event):
     """Called while we're panning the image"""
     logger.trace("Pan %s", event)
-    delta_x = event.x - self._drag_start[0]
-    delta_y = event.y - self._drag_start[1]
-    final_x = self._hold_offset[0] + delta_x
-    final_y = self._hold_offset[1] + delta_y
-    if self._center_offset != [final_x, final_y]:
-      self._center_offset[0] = final_x
-      self._center_offset[1] = final_y
-      self._draw_current(skip_text=True)
+    if self._drag_start != [-1, -1]:
+      delta_x = event.x - self._drag_start[0]
+      delta_y = event.y - self._drag_start[1]
+      final_x = self._hold_offset[0] + delta_x
+      final_y = self._hold_offset[1] + delta_y
+      if self._center_offset != [final_x, final_y]:
+        self._center_offset[0] = final_x
+        self._center_offset[1] = final_y
+        self._draw_current(skip_text=True)
 
   # Tkinter callback
   def _on_mouse_release(self, event):
     """Called when the left mouse button is released"""
     logger.trace("Release %s", event)
-    self._draw_current(skip_text=False)
+    if self._hold_offset != self._center_offset:
+      self._draw_current(skip_text=False)
 
   # Tkinter callback
   def _on_mouse_right(self, event):
@@ -1060,13 +1101,13 @@ class ImageManager:
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _toggle_text(self, event):
+  def _toggle_text(self, event=None):
     """Toggle base text display"""
     self._enable_text = not self._enable_text
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _toggle_zoom(self, event):
+  def _toggle_zoom(self, event=None):
     """Advance the zoom method and redraw the image"""
     if self._scale_mode == SCALE_NONE:
       self._scale_mode = SCALE_SHRINK
@@ -1092,7 +1133,7 @@ class ImageManager:
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _play_pause(self, event):
+  def _play_pause(self, event=None):
     """Process play/pause event"""
     self._playing = not self._playing
     if self._playing:
@@ -1106,9 +1147,12 @@ class ImageManager:
     """Called when the root window receives a Configure event"""
     logger.trace("_update_window on %r: %s", event.widget, event)
     if event.widget == self._root:
+      width, height = self._width, self._height
       self._width = event.width
       self._height = event.height
-      self.redraw(recenter=False)
+      # Inhibit redraw if scaling is less than a certain amount
+      if abs(width-self._width) > 2 or abs(height-self._height) > 2:
+        self.redraw(recenter=False)
 
   def _do_input_rename(self, value):
     """Handle the rename input"""
