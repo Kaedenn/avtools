@@ -250,6 +250,13 @@ def is_svg(filepath):
   """True if the path refers to an SVG file"""
   return get_mime_type(filepath) == ("image", "svg")
 
+def is_animated(image):
+  """True if the image is animated"""
+  try:
+    return image.is_animated and image.n_frames > 0
+  except AttributeError:
+    return False
+
 def open_image(filepath):
   """Open the image and return a PIL Image object"""
   try:
@@ -729,7 +736,7 @@ class ImageManager:
       logger.error("Failed to load image")
       return None
 
-    if self._is_animated():
+    if is_animated(image):
       if 0 <= self._frame_index < image.n_frames:
         image.seek(self._frame_index)
 
@@ -887,18 +894,11 @@ class ImageManager:
         return image_path
     return None
 
-  def _is_animated(self):
-    """True if self._image is an animated image"""
-    try:
-      return self._image.is_animated
-    except AttributeError:
-      return False
-
   # Tkinter callback
   def _on_frame_tick(self):
     """Called to advance a frame in an animated image"""
     if self._playing:
-      if self._is_animated():
+      if is_animated(self._image):
         self._frame_index += 1
         if self._frame_index >= self._image.n_frames:
           self._frame_index = 0
