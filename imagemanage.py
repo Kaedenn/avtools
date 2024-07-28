@@ -1510,6 +1510,8 @@ def main():
       help="append to the -o,--out file instead of overwriting")
   ag.add_argument("-t", "--text", action="store_true",
       help="output text instead of CSV")
+  ag.add_argument("-O", "--force-overwrite", action="store_true",
+      help="overwrite output file if it exists")
 
   ag = ap.add_argument_group("keybind actions")
   ag.add_argument("--write1", metavar="PATH",
@@ -1644,8 +1646,12 @@ def main():
   if args.out is not None:
     if os.path.isfile(args.out) and os.stat(args.out).st_size > 0:
       if not args.append:
-        logger.warning("%r: file exists; deleting", args.out)
-        os.truncate(args.out, 0)
+        if not args.force_overwrite:
+          logger.error("%r: file exists and -f missing", args.out)
+          ap.error(f"Refusing to overwrite file {args.out!r}")
+        else:
+          logger.warning("%r: file exists; deleting", args.out)
+          os.truncate(args.out, 0)
     manager.add_output_file(args.out, args.format)
 
   # Register functions to call when a mark key is pressed
