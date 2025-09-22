@@ -710,19 +710,13 @@ class ImageManager:
     actions = f"{recenter=} {skip_text=}"
     logger.debug("Image %d/%d %r %s", index+1, self._count, path, actions)
 
-    new_title = f"{index+1}/{self._count} {path}"
     self._image = self._get_image(path)
     if self._image is not None:
       self._draw_current(skip_text=skip_text)
     else:
       logger.error("Failed to load %r!", path)
-      new_title = "ERROR! " + new_title
       self._canvas.delete(tk.ALL)
-
-    if self._playing:
-      new_title += " (playing)"
-
-    self.root.title(new_title)
+    self._update_title()
 
   def redraw(self,
       recenter: bool = True,
@@ -1131,6 +1125,15 @@ class ImageManager:
       self._canvas.delete(item)
     self._canvas_temp = []
 
+  def _update_title(self):
+    """Update the window title"""
+    new_title = f"{self._index+1}/{self._count} {self._images[self._index]}"
+    if self._image is None:
+      new_title = "ERROR! " + new_title
+    if self._playing:
+      new_title += " (playing)"
+    self.root.title(new_title)
+
   @_blocked_by_input # Tkinter callback and manual call
   def _next_image(self, event: tk.Event) -> None:
     """Navigate to the next image"""
@@ -1276,6 +1279,8 @@ class ImageManager:
     elif self._frame_index > 0:
       self._frame_index = 0
       self.set_index(self._index)
+
+    self._update_title()
 
   # Tkinter callback
   def _update_window(self, event: tk.Event) -> None:
