@@ -57,6 +57,7 @@ except ImportError:
 
 TkID = int
 TkAnchor = typing.Literal["nw", "n", "ne", "w", "center", "e", "sw", "s", "se"]
+TkEvent = tk.Event[tk.Misc]
 OutputEntryType = Dict[str, str]
 CommandFunctionType = typing.Callable[[str, str, str], None]
 MarkFunctionType = typing.Callable[[str], None]
@@ -66,6 +67,7 @@ FontCacheKeyType = Tuple[bool, bool, Optional[int], Optional[str]]
 SortActionType = typing.Callable[[str], Any]
 T = typing.TypeVar("T") # pylint: disable=invalid-name
 Coord = Tuple[T, T]
+Generator = typing.Generator[T, None, None]
 
 class Logger(logging.Logger):
   "Logger with a TRACE level"
@@ -218,7 +220,7 @@ def get_asset_path(name: str) -> str:
 
 def read_images_file(
     path: str,
-    relative: bool = False) -> typing.Generator[str, None, None]:
+    relative: bool = False) -> Generator[str]:
   """
   Read a file and return the paths it contains.
 
@@ -252,22 +254,9 @@ def format_timestamp(tstamp: float, formatspec: str) -> str:
   """Format a numeric timestamp"""
   return datetime.datetime.fromtimestamp(tstamp).strftime(formatspec)
 
-@typing.overload
 def iterate_from(item_list: Iterable[T], start_index: int) -> Iterable[T]:
-  "See iterate_from"
-  ...
-
-@typing.overload
-def iterate_from(item_list: Iterable[T], start_index: int, with_index: bool) \
-    -> Iterable[Tuple[int, T]]:
-  "See iterate_from"
-  ...
-
-def iterate_from(item_list, start_index, with_index=False):
   """Iterate once over item_list, cyclically, starting at the given index"""
   base_sequence = list(item_list)
-  if with_index:
-    base_sequence = list(enumerate(item_list))
   yield from base_sequence[start_index:]
   yield from base_sequence[:start_index]
 
@@ -401,7 +390,8 @@ def parse_formatted_text(
   Extract embedded format information, returning a sequence of pairs that can
   be used to draw that text.
 
-  Formatting rules are reset on each new token unless incremental=True.
+  Formatting rules are reset on each new token unless either incremental=True
+  or the rule contains TF_INCREMENTAL.
 
   Returns a list of pairs (text_rules, text) where:
     text_rules is dict[str, str]
@@ -780,7 +770,7 @@ class ImageManager:
     return ids
 
   # Tkinter callback
-  def escape(self, event: tk.Event) -> None:
+  def escape(self, event: TkEvent) -> None:
     """Either cancel rename or exit the application"""
     if self._root.focus_get() == self._input:
       self._input_mode = MODE_NONE
@@ -790,7 +780,7 @@ class ImageManager:
       self.close(event)
 
   # Tkinter callback
-  def close(self, event: tk.Event) -> None:
+  def close(self, event: TkEvent) -> None:
     """Exit the application"""
     self.root.quit()
 
@@ -984,14 +974,14 @@ class ImageManager:
     self._root.after(self._frame_delay, lambda *_: self._on_frame_tick())
 
   @_blocked_by_input # Tkinter callback
-  def _toggle_menu(self, event: Optional[tk.Event] = None) -> None:
+  def _toggle_menu(self, event: Optional[TkEvent] = None) -> None:
     """Toggle the appearance of the menu bar"""
     self._menu_visible = not self._menu_visible
     new_menu = self._menu if self._menu_visible else self._null_menu
     self._root.config(menu=new_menu)
 
   # Tkinter callback
-  def _on_keypress(self, event: tk.Event) -> None:
+  def _on_keypress(self, event: TkEvent) -> None:
     """Called when any key is pressed"""
     assert self._image is not None
     logger.debug("Received keypress %r", event)
@@ -1026,7 +1016,7 @@ class ImageManager:
     self._canvas_clear_temp()
 
   # Tkinter callback
-  def _on_mouse_press(self, event: tk.Event) -> None:
+  def _on_mouse_press(self, event: TkEvent) -> None:
     """Called when the left mouse button is pressed"""
     if self._image is None:
       return
@@ -1047,7 +1037,7 @@ class ImageManager:
         self._hold_offset[1] = self._center_offset[1]
 
   # Tkinter callback
-  def _on_mouse_drag(self, event: tk.Event) -> None:
+  def _on_mouse_drag(self, event: TkEvent) -> None:
     """Called while we're panning the image (click and drag)"""
     logger.trace("Pan %s", event)
     if self._drag_start != [-1, -1]:
@@ -1062,21 +1052,21 @@ class ImageManager:
         self._draw_current(skip_text=True)
 
   # Tkinter callback
-  def _on_mouse_release(self, event: tk.Event) -> None:
+  def _on_mouse_release(self, event: TkEvent) -> None:
     """Called when the left mouse button is released"""
     logger.trace("Release %s", event)
     if self._hold_offset != self._center_offset:
       self._draw_current(skip_text=False)
 
   # Tkinter callback
-  def _on_mouse_right(self, event: tk.Event) -> None:
+  def _on_mouse_right(self, event: TkEvent) -> None:
     """Called when the right mouse button is pressed"""
     if self._center_offset != [0, 0]:
       self._center_offset = [0, 0]
       self._draw_current()
 
   # Tkinter callback
-  def _on_mouse_scroll(self, event: tk.Event) -> None:
+  def _on_mouse_scroll(self, event: TkEvent) -> None:
     """Called when the mouse scroll wheel is used"""
     self._scale_mode = SCALE_MANUAL
     if event.num == 4 or event.delta > 0: # scroll-up
@@ -1086,7 +1076,7 @@ class ImageManager:
     self.redraw(recenter=False)
 
   # Tkinter callback
-  def _on_mouse_middle_click(self, event: tk.Event) -> None:
+  def _on_mouse_middle_click(self, event: TkEvent) -> None:
     """Called when the middle mouse button is pressed"""
     if self._scale_mode == SCALE_MANUAL:
       self._scale_mode = SCALE_EXACT
@@ -1125,7 +1115,7 @@ class ImageManager:
       self._canvas.delete(item)
     self._canvas_temp = []
 
-  def _update_title(self):
+  def _update_title(self) -> None:
     """Update the window title"""
     new_title = f"{self._index+1}/{self._count} {self._images[self._index]}"
     if self._image is None:
@@ -1135,82 +1125,82 @@ class ImageManager:
     self.root.title(new_title)
 
   @_blocked_by_input # Tkinter callback and manual call
-  def _next_image(self, event: tk.Event) -> None:
+  def _next_image(self, event: TkEvent) -> None:
     """Navigate to the next image"""
     self.set_index((self._index + 1) % self._count)
 
   @_blocked_by_input # Tkinter callback and manual call
-  def _prev_image(self, event: tk.Event) -> None:
+  def _prev_image(self, event: TkEvent) -> None:
     """Navigate to the previous image"""
     self.set_index((self._index - 1) % self._count)
 
   @_blocked_by_input # Tkinter callback
-  def _next_many(self, event: tk.Event) -> None:
+  def _next_many(self, event: TkEvent) -> None:
     """Navigate to the 10th next image"""
     self.set_index((self._index + 10) % self._count)
 
   @_blocked_by_input # Tkinter callback
-  def _prev_many(self, event: tk.Event) -> None:
+  def _prev_many(self, event: TkEvent) -> None:
     """Navigate to the 10th previous image"""
     self.set_index((self._index - 10) % self._count)
 
   @_blocked_by_input # Tkinter callback
-  def _next_some(self, event: tk.Event) -> None:
+  def _next_some(self, event: TkEvent) -> None:
     """Navigate to the Nth next image"""
     self._input_mode = MODE_NEXT_SOME
     self._input_set_text("N?", select=True)
 
   @_blocked_by_input # Tkinter callback
-  def _prev_some(self, event: tk.Event) -> None:
+  def _prev_some(self, event: TkEvent) -> None:
     """Navigate to the Nth next image"""
     self._input_mode = MODE_PREV_SOME
     self._input_set_text("N?", select=True)
 
   @_blocked_by_input # Tkinter callback
-  def _rename_image(self, event: tk.Event) -> None:
+  def _rename_image(self, event: TkEvent) -> None:
     """Rename the current image"""
     self._input_mode = MODE_RENAME
     self._input_set_text(os.path.basename(self.path()), select=True)
 
   @_blocked_by_input # Tkinter callback
-  def _delete_image(self, event: tk.Event) -> None:
+  def _delete_image(self, event: TkEvent) -> None:
     """Delete the current image"""
     self._action(("DELETE",))
     self._next_image(event)
 
   @_blocked_by_input # Tkinter callback
-  def _go_to_image(self, event: tk.Event) -> None:
+  def _go_to_image(self, event: TkEvent) -> None:
     """Navigate to the image with the given number"""
     self._input_mode = MODE_SET_IMAGE
     self._input_set_text(self._last_input, select=True)
 
   @_blocked_by_input # Tkinter callback
-  def _find_image(self, event: tk.Event) -> None:
+  def _find_image(self, event: TkEvent) -> None:
     """Show the first image filename starting with a given prefix"""
     self._input_mode = MODE_GOTO
     self._input_set_text(self._last_input, select=True)
 
   @_blocked_by_input # Tkinter callback
-  def _mark_image(self, event: tk.Event) -> None:
+  def _mark_image(self, event: TkEvent) -> None:
     """Mark an image for later examination"""
     if event.char in self._mark_functions:
       self._mark_functions[event.char](self.path())
     self._action((f"MARK-{event.char}",))
 
   @_blocked_by_input # Tkinter callback
-  def _label(self, event: tk.Event) -> None:
+  def _label(self, event: TkEvent) -> None:
     """Label an image"""
     self._input_mode = MODE_LABEL
     self._input_set_text("Label?", select=True)
 
   @_blocked_by_input # Tkinter callback
-  def _enter_command(self, event: tk.Event) -> None:
+  def _enter_command(self, event: TkEvent) -> None:
     """Let the user enter an arbitrary command"""
     self._input_mode = MODE_COMMAND
     self._input_set_text("Command?", select=True)
 
   @_blocked_by_input # Tkinter callback
-  def _repeat_command(self, event: tk.Event) -> None:
+  def _repeat_command(self, event: TkEvent) -> None:
     """Repeat the last command"""
     if self._last_command:
       self._do_input_command(self._last_command)
@@ -1218,7 +1208,7 @@ class ImageManager:
       self._input_set_text("Error: No command entered", select=False)
 
   @_blocked_by_input # Tkinter callback
-  def _show_help(self, event: Optional[tk.Event] = None) -> None:
+  def _show_help(self, event: Optional[TkEvent] = None) -> None:
     """Display help text to the user"""
     sys.stderr.write(HELP_KEY_ACTIONS)
     help_text = HELP_KEY_ACTIONS
@@ -1229,7 +1219,7 @@ class ImageManager:
     self._root.after(10000, lambda *_: self._canvas_clear_temp())
 
   @_blocked_by_input # Tkinter callback
-  def _adjust(self, event: tk.Event) -> None:
+  def _adjust(self, event: TkEvent) -> None:
     """Fine-tune image size (for testing)"""
     if event.char == 'z':
       self._height -= 1
@@ -1239,13 +1229,13 @@ class ImageManager:
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _toggle_text(self, event: Optional[tk.Event] = None) -> None:
+  def _toggle_text(self, event: Optional[TkEvent] = None) -> None:
     """Toggle base text display"""
     self._enable_text = not self._enable_text
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _toggle_zoom(self, event: Optional[tk.Event] = None) -> None:
+  def _toggle_zoom(self, event: Optional[TkEvent] = None) -> None:
     """Advance the zoom method and redraw the image"""
     if self._scale_mode == SCALE_MANUAL:
       self._scale_mode = SCALE_SHRINK
@@ -1257,21 +1247,21 @@ class ImageManager:
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _zoom_out(self, event: tk.Event) -> None:
+  def _zoom_out(self, event: TkEvent) -> None:
     """Decrease the scale amount by 10%"""
     self._scale_amount -= ZOOM_SCALE_PERCENT
     self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _zoom_in(self, event: tk.Event) -> None:
+  def _zoom_in(self, event: TkEvent) -> None:
     """Increase the scale amount by 10%"""
     self._scale_amount += ZOOM_SCALE_PERCENT
     self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
-  def _play_pause(self, event: Optional[tk.Event] = None) -> None:
+  def _play_pause(self, event: Optional[TkEvent] = None) -> None:
     """Process play/pause event"""
     self._playing = not self._playing
     if self._playing:
@@ -1283,7 +1273,7 @@ class ImageManager:
     self._update_title()
 
   # Tkinter callback
-  def _update_window(self, event: tk.Event) -> None:
+  def _update_window(self, event: TkEvent) -> None:
     """Called when the root window receives a Configure event"""
     logger.trace("_update_window on %r: %s", event.widget, event)
     if event.widget == self._root:
@@ -1356,11 +1346,10 @@ class ImageManager:
     if cmd in CMD_NEXT_PATH:
       curr_path = os.path.dirname(self.path())
       found = False
-      for image_idx, image_path in iterate_from(
-          self._images, self._index+1, with_index=True):
-        dname = os.path.dirname(image_path)
+      for iidx, ipath in iterate_from(enumerate(self._images), self._index+1):
+        dname = os.path.dirname(ipath)
         if dname != curr_path:
-          self.set_index(image_idx)
+          self.set_index(iidx)
           found = True
           break
       if not found:
@@ -1454,7 +1443,7 @@ def get_images(
     quick: bool = False,
     cont_on_error: bool = False) -> List[str]:
   """Return a list of all images found in the given paths"""
-  def list_path(path: str) -> typing.Generator[str, None, None]:
+  def list_path(path: str) -> Generator[str]:
     if os.path.isfile(path):
       yield path
     elif os.path.isdir(path):

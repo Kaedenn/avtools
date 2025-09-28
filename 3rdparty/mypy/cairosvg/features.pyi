@@ -1,0 +1,9 @@
+from _typeshed import Incomplete
+
+ROOT: str
+LOCALE: Incomplete
+SUPPORTED_FEATURES: Incomplete
+
+def has_features(features): ...
+def support_languages(languages): ...
+def match_features(node): ...
