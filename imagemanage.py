@@ -57,7 +57,10 @@ except ImportError:
 
 TkID = int
 TkAnchor = typing.Literal["nw", "n", "ne", "w", "center", "e", "sw", "s", "se"]
-TkEvent = tk.Event[tk.Misc]
+if typing.TYPE_CHECKING:
+  TkEvent = tk.Event[tk.Misc] # pylint: disable=unsubscriptable-object, invalid-name
+else:
+  TkEvent = typing.Type[tk.Event] # pylint: disable=invalid-name
 OutputEntryType = Dict[str, str]
 CommandFunctionType = typing.Callable[[str, str, str], None]
 MarkFunctionType = typing.Callable[[str], None]
@@ -155,14 +158,20 @@ CMD_HELP = ("h", "help")
 # Resample methods for scaling images
 SAMPLING_METHODS: Dict[str, Union[str, int]] = {
   "N": "NEAREST",
-  "BL": "BILINEAR",
-  "BC": "BICUBIC",
-  "L": "LANCZOS",
-  "NEAREST": Image.Resampling.NEAREST,    # pylint: disable=no-member
-  "BILINEAR": Image.Resampling.BILINEAR,  # pylint: disable=no-member
-  "BICUBIC": Image.Resampling.BICUBIC,    # pylint: disable=no-member
-  "LANCZOS": Image.Resampling.LANCZOS,    # pylint: disable=no-member
+  "L": "BILINEAR",
+  "C": "BICUBIC",
+  "Z": "LANCZOS",
 }
+try: # Support Pillow 9 and 10
+  SAMPLING_METHODS["NEAREST"] = Image.Resampling.NEAREST
+  SAMPLING_METHODS["BILINEAR"] = Image.Resampling.BILINEAR
+  SAMPLING_METHODS["BICUBIC"] = Image.Resampling.BICUBIC
+  SAMPLING_METHODS["LANCZOS"] = Image.Resampling.LANCZOS
+except AttributeError:
+  SAMPLING_METHODS["NEAREST"] = Image.NEAREST
+  SAMPLING_METHODS["BILINEAR"] = Image.BILINEAR
+  SAMPLING_METHODS["BICUBIC"] = Image.BICUBIC
+  SAMPLING_METHODS["LANCZOS"] = Image.LANCZOS
 
 HELP_KEY_ACTIONS = """
 Key actions:
@@ -218,9 +227,7 @@ def get_asset_path(name: str) -> str:
   self_path = os.path.dirname(os.path.realpath(sys.argv[0]))
   return os.path.join(self_path, ASSET_PATH, name)
 
-def read_images_file(
-    path: str,
-    relative: bool = False) -> Generator[str]:
+def read_images_file(path: str, relative: bool = False) -> Generator[str]:
   """
   Read a file and return the paths it contains.
 
@@ -545,8 +552,7 @@ class ImageManager:
     menu_file.add_command(label="Exit", command=root.quit)
     self._menu.add_cascade(label="File", menu=menu_file)
     menu_view = tk.Menu(self._menu, tearoff=0)
-    menu_view.add_command(label="Reset Image",
-        command=lambda: self.redraw(recenter=True))
+    menu_view.add_command(label="Reset Image", command=self.recenter)
     menu_view.add_command(label="Toggle Text", command=self._toggle_text)
     menu_view.add_command(label="Hide Menu", command=self._toggle_menu)
     self._menu.add_cascade(label="View", menu=menu_view)
@@ -583,7 +589,7 @@ class ImageManager:
     self._input.lower(self._canvas)
 
     # Image list and current image objects
-    self._images = list(images)  # Loaded images
+    self._images = list(images)         # Loaded images
     self._count = len(self._images)     # Total number of images
     self._index = 0                     # Current image index
     self._image: Optional[Image.Image] = None
@@ -619,9 +625,9 @@ class ImageManager:
 
   root = property(lambda self: self._root)
 
-  def add_output_file(self, path: str, lformat: str = LINE_FORMAT) -> None:
+  def add_output_file(self, path: str, line_format: str = LINE_FORMAT) -> None:
     """Write mark actions to the given path"""
-    self._output.append({"path": path, "line_format": lformat})
+    self._output.append({"path": path, "line_format": line_format})
 
   def add_mark_function(self, key: str, cbfunc: MarkFunctionType) -> None:
     """Add callback function for when mark key (1..9) is pressed"""
@@ -707,6 +713,10 @@ class ImageManager:
       logger.error("Failed to load %r!", path)
       self._canvas.delete(tk.ALL)
     self._update_title()
+
+  def recenter(self, skip_text: Optional[bool] = None) -> None:
+    """Redraw and re-center the current image"""
+    self.redraw(recenter=True, skip_text=skip_text)
 
   def redraw(self,
       recenter: bool = True,
@@ -939,11 +949,11 @@ class ImageManager:
     self._actions[path].append(action)
     for oentry in self._output:
       fpath = oentry["path"]
-      lformat = oentry["line_format"]
+      line_format = oentry["line_format"]
       with open(fpath, "at") as fobj:
-        fobj.write(lformat.format(path, " ".join(action)))
+        fobj.write(line_format.format(path, " ".join(action)))
 
-  def _input_set_text(self, text: str, select: bool = True) -> None:
+  def _input_set_text(self, text: str, select: bool = False) -> None:
     """Set the input box's text, optionally selecting the content"""
     self.show_input()
     self._input.delete(0, len(self._input.get()))
@@ -1205,7 +1215,7 @@ class ImageManager:
     if self._last_command:
       self._do_input_command(self._last_command)
     else:
-      self._input_set_text("Error: No command entered", select=False)
+      self._input_set_text("Error: No command entered")
 
   @_blocked_by_input # Tkinter callback
   def _show_help(self, event: Optional[TkEvent] = None) -> None:
@@ -1243,21 +1253,21 @@ class ImageManager:
       self._scale_mode = SCALE_EXACT
     else:
       self._scale_mode = SCALE_MANUAL
-    self._input_set_text(f"Scaling set to {self._scale_mode}", select=False)
+    self._input_set_text(f"Scaling set to {self._scale_mode}")
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
   def _zoom_out(self, event: TkEvent) -> None:
     """Decrease the scale amount by 10%"""
     self._scale_amount -= ZOOM_SCALE_PERCENT
-    self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
+    self._input_set_text(f"Set scale to {self._scale_amount}%")
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
   def _zoom_in(self, event: TkEvent) -> None:
     """Increase the scale amount by 10%"""
     self._scale_amount += ZOOM_SCALE_PERCENT
-    self._input_set_text(f"Set scale to {self._scale_amount}%", select=False)
+    self._input_set_text(f"Set scale to {self._scale_amount}%")
     self.redraw(recenter=False)
 
   @_blocked_by_input # Tkinter callback
@@ -1310,7 +1320,7 @@ class ImageManager:
       self.set_index(idx)
     except ValueError as err:
       logger.error(err)
-      self._input_set_text(f"Error: {err}", select=False)
+      self._input_set_text(f"Error: {err}")
 
   def _do_input_advance_many(self, value: str, negative: bool = False) -> None:
     """Handle the advance-by-number inputs"""
@@ -1323,7 +1333,7 @@ class ImageManager:
       self.set_index(index)
     except ValueError as err:
       logger.error(err)
-      self._input_set_text(f"Error: {err}", select=False)
+      self._input_set_text(f"Error: {err}")
 
   def _do_input_label(self, value: str) -> None:
     """Handle the label input"""
@@ -1353,19 +1363,19 @@ class ImageManager:
           found = True
           break
       if not found:
-        self._input_set_text(f"Error: {self.path()} is unique", select=False)
+        self._input_set_text(f"Error: {self.path()} is unique")
     elif cmd in CMD_DELAY:
       try:
         self._frame_delay = int(args)
       except ValueError as err:
-        self._input_set_text(f"Error: {err}", select=False)
+        self._input_set_text(f"Error: {err}")
       logger.info("Configured frame delay to %d (%f fps)",
           self._frame_delay, 1000/self._frame_delay)
     elif cmd in CMD_FPS:
       try:
         self._frame_delay = 1000 // int(args)
       except ValueError as err:
-        self._input_set_text(f"Error: {err}", select=False)
+        self._input_set_text(f"Error: {err}")
       logger.info("Configured frame delay to %d (%f fps)",
           self._frame_delay, 1000/self._frame_delay)
     elif cmd in CMD_INSPECT:
@@ -1387,10 +1397,10 @@ class ImageManager:
         logger.error("Choices: %s", " ".join(SAMPLING_METHODS))
         algorithm = SAMPLING_METHODS["NEAREST"]
       self._sample_method = algorithm
-      self._input_set_text(f"Resample method set to {alg_name}", select=False)
+      self._input_set_text(f"Resample method set to {alg_name}")
     elif cmd in CMD_WRITE:
       self.add_output_file(args, LINE_FORMAT)
-    elif cmd in CMD_HELP:
+    elif cmd in CMD_HELP: # TODO: Draw this help text to screen
       self._show_help(None)
       logger.info("Commands:")
       logger.info("np|nextpath - advance to next image in a different folder")
@@ -1402,7 +1412,7 @@ class ImageManager:
       logger.info("w|write [PATH] - write current and future actions to file")
       logger.info("h|help - display this message and show the help text")
     elif not handled:
-      self._input_set_text(f"Invalid command {command!r}", select=False)
+      self._input_set_text(f"Invalid command {command!r}")
 
   # Tkinter callback
   def _input_enter(self, *args: Any) -> None:
@@ -1431,8 +1441,7 @@ class ImageManager:
     elif mode == MODE_COMMAND:      # Execute an arbitrary command
       self._do_input_command(value)
     elif mode == MODE_NONE:
-      logger.warning("Received input %r args %r without mode",
-          value, args)
+      logger.warning("Received input %r args %r without mode", value, args)
     else:
       logger.error("Internal error: invalid mode %s; value=%r args=%r",
           mode, value, args)
