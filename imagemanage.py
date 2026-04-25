@@ -588,6 +588,10 @@ class ImageManager:
     self._input.bind("<Key-Return>", self._input_enter)
     self._input.lower(self._canvas)
 
+    # TODO: If enabled, create an image carousel below the main canvas grid and
+    # display both the previous and next N images as thumbnails. Allow clicking
+    # on an image to navigate to that image.
+
     # Image list and current image objects
     self._images = list(images)         # Loaded images
     self._count = len(self._images)     # Total number of images
@@ -1638,6 +1642,8 @@ def main() -> None:
       help="skip pre-verifying image files (useful for large image sets)")
   ag.add_argument("-E", "--ignore-errors", action="store_true",
       help="continue even if some of the images are invalid")
+  ag.add_argument("--start", type=int, metavar="NUM", default=1,
+      help="after loading, start at image %(metavar)s (default: %(default)s)")
 
   ag = ap.add_argument_group("display options")
   ag.add_argument("--width", type=int,
@@ -1756,7 +1762,7 @@ def main() -> None:
       seed = args.seed
       if seed is None:
         seed = int(time.time())
-      logger.debug("Shuffling images using random seed %s", seed)
+      logger.info("Shuffling images using random seed %s", seed)
       rand = random.Random()
       rand.seed(seed)
       rand.shuffle(images)
@@ -1825,7 +1831,10 @@ def main() -> None:
       manager.add_text_function(build_text_function(command))
 
   # Load and display the first image
-  manager.set_index(0)
+  if args.start is not None:
+    manager.set_index(args.start - 1)
+  else:
+    manager.set_index(0)
 
   # Don't run the main loop if we're interactive
   if not sys.flags.interactive:
