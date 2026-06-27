@@ -18,7 +18,6 @@ A user can certainly create a mark action to do such a thing, however.
 
 # TODO: README
 # TODO: Draw text on its own buffer
-# TODO: Support webm, webp
 # TODO: Support XPM (PIL breaks on images >1bpp)
 # TODO: Allow zoom adjustments (_ and +) to affect other scale modes
 
@@ -48,11 +47,32 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import PIL
 from PIL import Image, ImageTk
+
+# Attempt to use custom XPM module with >1bpp and named colors.
+# PIL's built-in XPM loader doesn't support these.
+try:
+  # pylint: disable=unused-import
+  import XpmImagePlugin
+  Image.register_open(
+    XpmImagePlugin.XpmImageFile.format,
+    XpmImagePlugin.XpmImageFile,
+    XpmImagePlugin.xpm_accept
+  )
+  Image.register_extension(
+    XpmImagePlugin.XpmImageFile.format,
+    ".xpm"
+  )
+  Image.register_mime(
+    XpmImagePlugin.XpmImageFile.format,
+    "image/xpm"
+  )
+except ImportError:
+  pass
+
 try:
   import cairosvg
   HAVE_CAIRO_SVG = True
 except ImportError:
-  sys.stderr.write("cairosvg not found, svg support disabled\n")
   HAVE_CAIRO_SVG = False
 
 TkID = int
@@ -162,6 +182,7 @@ SAMPLING_METHODS: Dict[str, Union[str, int]] = {
   "C": "BICUBIC",
   "Z": "LANCZOS",
 }
+# pylint: disable=no-member
 try: # Support Pillow 9 and 10
   SAMPLING_METHODS["NEAREST"] = Image.Resampling.NEAREST
   SAMPLING_METHODS["BILINEAR"] = Image.Resampling.BILINEAR
@@ -172,6 +193,7 @@ except AttributeError:
   SAMPLING_METHODS["BILINEAR"] = Image.BILINEAR
   SAMPLING_METHODS["BICUBIC"] = Image.BICUBIC
   SAMPLING_METHODS["LANCZOS"] = Image.LANCZOS
+# pylint: enable=no-member
 
 HELP_KEY_ACTIONS = """
 Key actions:
@@ -217,10 +239,10 @@ def exec_program(
   logger.debug("exec %r with %d inputs", command, len(lines))
   logger.trace("inputs: %r", lines)
   args = shlex.split(command)
-  proc = Popen(args, stdin=PIPE, stdout=PIPE, stderr=sys.stderr)
-  text_input = os.linesep.join(lines).encode()
-  output, _ = proc.communicate(input=text_input)
-  return output.decode().splitlines()
+  with Popen(args, stdin=PIPE, stdout=PIPE, stderr=sys.stderr) as proc:
+    text_input = os.linesep.join(lines).encode()
+    output, _ = proc.communicate(input=text_input)
+    return output.decode().splitlines()
 
 def get_asset_path(name: str) -> str:
   """Get the file path to the named asset"""
@@ -236,7 +258,7 @@ def read_images_file(path: str, relative: bool = False) -> Generator[str]:
   the file path.
   """
   path_dir = os.path.dirname(path)
-  with open(path, "rt") as fobj:
+  with open(path, "rt", encoding="UTF-8") as fobj:
     for line in fobj:
       file_path = line.rstrip()
       if relative and not os.path.isabs(file_path):
@@ -700,7 +722,7 @@ class ImageManager:
       if not self._enable_text:
         skip_text = True
       elif self._text_lines:
-        skip_text = (self._index == index)
+        skip_text = self._index == index
       else:
         skip_text = False
 
@@ -954,7 +976,7 @@ class ImageManager:
     for oentry in self._output:
       fpath = oentry["path"]
       line_format = oentry["line_format"]
-      with open(fpath, "at") as fobj:
+      with open(fpath, "at", encoding="UTF-8") as fobj:
         fobj.write(line_format.format(path, " ".join(action)))
 
   def _input_set_text(self, text: str, select: bool = False) -> None:
@@ -1000,17 +1022,17 @@ class ImageManager:
     assert self._image is not None
     logger.debug("Received keypress %r", event)
     if self._keybinds.get(event.keysym):
-      format_keys = dict(
-        file=self.path(),
-        index=self._index,
-        count=self._count,
-        dirname=os.path.dirname(self.path()),
-        basename=os.path.basename(self.path()),
-        cwidth=self._width,
-        cheight=self._height,
-        iwidth=self._image.size[0],
-        iheight=self._image.size[1]
-      )
+      format_keys = {
+        "file": self.path(),
+        "index": self._index,
+        "count": self._count,
+        "dirname": os.path.dirname(self.path()),
+        "basename": os.path.basename(self.path()),
+        "cwidth": self._width,
+        "cheight": self._height,
+        "iwidth": self._image.size[0],
+        "iheight": self._image.size[1]
+      }
       for command in self._keybinds[event.keysym]:
         cmd = command.format(**format_keys)
         logger.debug("Invoking %r", cmd)
@@ -1461,7 +1483,7 @@ def get_images(
       yield path
     elif os.path.isdir(path):
       if recursive:
-        for root, dirs, files in os.walk(path):
+        for root, _, files in os.walk(path):
           for file in files:
             yield os.path.join(root, file)
       else:
@@ -1503,7 +1525,7 @@ def build_mark_write_function(path: str) -> MarkFunctionType:
     """Mark function: write image path to the path given"""
     mode = "a+t" if os.path.isfile(path) else "wt"
     logger.trace("open(%r, %r) to write %r", path, mode, image_path)
-    with open(path, mode) as fobj:
+    with open(path, mode, encoding="UTF-8") as fobj:
       fobj.write(image_path)
       fobj.write(os.linesep)
       fobj.close()
@@ -1529,14 +1551,14 @@ def build_text_function(program_string: str) -> TextFunctionType:
     else:
       args.append(path)
     cmd = subprocess.list2cmdline(args)
-    proc = Popen(args, stdin=p_stdin, stdout=PIPE, stderr=PIPE)
-    out, err = proc.communicate(input=p_input)
-    if proc.returncode != 0:
-      logger.error("Command %r exited nonzero %d", cmd, proc.returncode)
-    if err:
-      logger.warning("Program %r wrote to stderr:", cmd)
-      logger.warning(err.decode().rstrip())
-    return out.decode()
+    with Popen(args, stdin=p_stdin, stdout=PIPE, stderr=PIPE) as proc:
+      out, err = proc.communicate(input=p_input)
+      if proc.returncode != 0:
+        logger.error("Command %r exited nonzero %d", cmd, proc.returncode)
+      if err:
+        logger.warning("Program %r wrote to stderr:", cmd)
+        logger.warning(err.decode().rstrip())
+      return out.decode()
 
   return text_func
 
@@ -1545,6 +1567,7 @@ def _parse_sort_arg(
     reverse: bool) -> Tuple[str, SortActionType, bool]:
   """Parse a sort argument into a (mode, func, reverse?) triple"""
   sort_mode = sort_arg
+  # pylint: disable=unnecessary-lambda-assignment
   sort_func = lambda fname: fname
   sort_rev = reverse
   if sort_arg.startswith("r") and sort_arg[1:] in SORT_MODES:
